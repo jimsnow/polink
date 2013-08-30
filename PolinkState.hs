@@ -239,7 +239,7 @@ $(deriveSafeCopy 0 'base ''PLType)
 
 -- Don't re-order.
 data NegLinkType =
-  Disagree | Criticize | Discredit | Condemn | Accuse | Sue | Fine | Hinder | Fire | AcceptResignation | Resign | Divorce | Breakup | Assault | Threaten | Kill | Divest | Split | Recall | DeclinesToHelp | EndsRelationship | Insult | Oppose | Distrust
+  Disagree | Criticize | Discredit | Condemn | Accuse | Sue | Fine | Hinder | Fire | AcceptResignation | Resign | Divorce | Breakup | Assault | Threaten | Kill | Divest | Split | Recall | DeclinesToHelp | EndsRelationship | Insult | Oppose | Distrust | Ridicule
     deriving (Eq, Ord, Show, Read, Data, Typeable, Enum)
 
 -- Links that are negative in both directions.
@@ -321,6 +321,7 @@ lToText (NL nl) =
     Insult ->       "insults"
     Oppose ->       "opposes"
     Distrust ->     "is suspicious of"
+    Ridicule ->     "ridicules"
 
 data Link = Link {
   _lid     :: Lid,

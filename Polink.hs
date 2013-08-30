@@ -28,6 +28,8 @@ import Control.Lens -- hiding (left, right)
 import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.Sequence as SEQ
+import Data.List (sortBy)
+import Data.Function (on)
 import Text.Blaze
 import Web.Cookie
 import qualified Data.ByteString as B
@@ -744,7 +746,7 @@ getHomeR =
              <li><a href="@{EntityR (Eid 11)}">US Presidents</a>
              <li><a href="@{EntityR (Eid 48)}">US Supreme Court</a>
              <li><a href="@{EntityR (Eid 21)}">US Senate</a>
-             <li><a href="@{EntityR (Eid 22)}">US House</a> (incomplete: help us by adding your representatives)
+             <li><a href="@{EntityR (Eid 22)}">US House</a> (help us by adding your representatives)
 
             $maybe u <- cmuser ctx
               <p><b>Things to do:</b>
@@ -779,7 +781,7 @@ newUserForm =
       <$> areq userField "username" Nothing
       <*> areq trueField "I agree to the terms below." Nothing
   where
-   userField = check (bracketLen "username must be between 3 and 64 characters" 3 64) textField
+   userField = check (bracketLen "username must be between 4 and 64 characters" 4 64) textField
    trueField = checkBool (id) ("you must agree to the site policy"::T.Text) checkBoxField
 
 getNewUserR :: Handler RepHtml
@@ -856,31 +858,33 @@ getAboutR =
           <h2>the social network anyone can edit
           <h3>What is this?
           <p>
-            The relationships between public figures (politicians, journalists,
-            commentators, lobbyists, etc..) are often too complex for any person
-            to easily keep in their head.  Polink is a tool to crowd-source 
-            relationship information about people and organizations, and to use
-            that data to make it easier to understand how they fit into the
-            larger political context.
+            Polink is a tool to aggregate relationship information about people
+            and organizations, and to use that data to make it easier to 
+            understand how they fit into the larger political context.
+          <p>
+            These relationships are often too complex and numerous for any one
+            person to easily keep track of.  The purpose of this site is to
+            make it easier for those of us who are interested in these
+            connections to pool our data.
           <p>
             Any registered user may add a person or organization to our
             database, and may create links between these entities.  Other users
             may either verify or contest the validity of those entities or links.
 
-          <h3>What sort of people or organizations may we enter?
+          <h3>What sort of people or organizations should we add?
           <p>
             For the moment, I'd like to restrict it to people or organizations
             who are relevant to U.S. national politics or current events.
             If someone is a household name or in the news, they're an acceptable
             candidate.  If they are in a position to influence national politics,
-            they're relavant.
+            they're also relavant.
           <p>
             State governors are okay, but I'd like to avoid
             state legislators or town mayors and the like for now, unless they've
             somehow made themselves relevant to national politics.
           <p>
-            International figures are fair game if they have some kind of relationship
-            with the U.S. (whether friendly or adversarial).
+            International figures are fair game if they have some kind of
+            relationship with the U.S. (whether friendly or adversarial).
 
           <h3>How do I add a person or organization?
           <p>
@@ -911,7 +915,7 @@ getAboutR =
             occurred and a link to the news article.  (For some kinds of relationships
             that cover a span of time, it makes sense to add an end date as well.)
 
-          <h3>What sort of links are acceptable to add?
+          <h3>What sort of links should I add?
           <p>
             Links should be independently verifiable.  A citation url is required
             for creating links, and it should point to an appropriate article.
@@ -921,7 +925,7 @@ getAboutR =
           <p>
             Links have a type, which should be set appropriately.
           <p>
-            Links generally also have a direction.  "<b>A</b> disagrees with <b>B</b>"
+            Links usually also have a direction.  "<b>A</b> disagrees with <b>B</b>"
             is not the same as "<b>B</b> disagrees with <b>A</b>".
             Links should have the subject first and the object last, as in
             the "subject-verb-object" order of English.
@@ -986,19 +990,7 @@ getAboutR =
             in the url, and if the item is in our database with that wiki
             link, it'll take you to the right place.
             For example: <a href="@{WikiR "Barack_Obama"}">http://polink.org/wiki/Barack_Obama</a>.
-
-          <h3>What can I do with this data?
-          <p>
-            At the present, you can browse the entities and links.
-          <p>
-            We're currently working to add tools to make it easy to figure
-            how well any two people are connected,
-            and to estimate how well you like a given politician,
-            journalist, author, etc... based on their connections to the people
-            you've already told us you like or dislike.
-          <p>
-            We're also working on an API to make it easy for third parties to
-            use our data.
+            You can also browse the <a href="@{EntitiesR}">list of all entities</a>.
 
           <h3>Who is running this site?
           <p>
@@ -1026,7 +1018,9 @@ getAboutR =
             Persistance is handled by
             <a href="http://hackage.haskell.org/package/acid-state">acid-state</a>,
             which can be thought of as an in-memory database with an on-disk log.
-            If there is interest, we may release the software on hackage or github.
+          <p>
+            This is an open-source project.  Our source code is available on
+            Github <a href="https://github.com/jimsnow/polink">here</a>.
        |]
 
 getRSHelpR :: Handler RepHtml
@@ -1663,15 +1657,15 @@ pgeneric_lt :: [PosLinkType]
 pgeneric_lt = [Agree, Endorse, Praise, Contribute, Trust, Assist, DoFavor, MakeDeal, AsksForHelp, Appologize, Forgive, Defend, Protect]
 
 ngeneric_lt :: [NegLinkType]
-ngeneric_lt = [Disagree, Criticize, Discredit, Distrust, Accuse, Condemn, Insult, Sue, Oppose, Hinder, Threaten, EndsRelationship, DeclinesToHelp]
+ngeneric_lt = [Disagree, Criticize, Discredit, Distrust, Accuse, Condemn, Insult, Sue, Oppose, Hinder, Threaten, EndsRelationship, DeclinesToHelp, Ridicule]
 
 pp_lt = ([Marry, ParentOf, Nominate, Appoint, WorksFor, ContractsFor], [Divorce, Breakup, Fire, Assault, Kill])
 po_lt = ([Member, Invest, Retire, WorksFor, ContractsFor, HoldsOffice], [Resign, Divest])
 op_lt = ([Nominate, Appoint, Elect, BestowTitle, Award], [Recall])
-oo_lt = ([Invest, SubOrg], [Divest, Split])
+oo_lt = ([Invest, SubOrg, Member], [Divest, Split])
 
 mksfl :: ([PosLinkType],[NegLinkType]) -> [(T.Text, LinkType)]
-mksfl (pspec, nspec) = pl ++ nl
+mksfl (pspec, nspec) = (sortBy (compare `on` fst) pl) ++ (sortBy (compare `on` fst) nl)
   where
     ps = pgeneric_lt ++ pspec
     ns = ngeneric_lt ++ nspec
