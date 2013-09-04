@@ -87,6 +87,9 @@ instance PathPiece UTid where
   fromPathPiece pp = fmap UTid (fromPathPiece pp)
   toPathPiece (UTid id) = toPathPiece id
 
+instance PathPiece Iid where
+  fromPathPiece pp = fmap Iid (fromPathPiece pp)
+  toPathPiece (Iid id) = toPathPiece id
 
 instance PathPiece Id where
   fromPathPiece pp =
@@ -155,6 +158,11 @@ mkYesod "InfluenceGraph" [parseRoutes|
   /delot/#OTid                   DelOTagR         POST
   /ut/#UTid                      UTagR            GET
   /el/#Eid/#Eid                  LinksBetweenR    GET
+  /i/#Iid                        IssueR           GET
+  /newissue                      NewIssueR        GET POST
+  /l/#Lid/newissuetag/#Iid       NewIssueTagR     POST
+  /deli/#Iid                     DelIssue         POST
+  /delit/#Lid/#Iid               DelIssueTag      POST
   /wiki/#Txt                     WikiR            GET
   /rsstate                       RSStateR         GET
 |]
@@ -628,6 +636,17 @@ renderOTid gs otid =
         \ deleted organization tag
     |]
 
+renderIid :: GraphState -> Iid -> GW
+renderIid gs iid =
+  let missue = gs ^. issues ^. at iid
+  in
+    [whamlet|
+      $maybe issue <- missue
+        \ issue <a href="@{IssueR iid}">#{_iname issue}</a>
+      $nothing
+        \ deleted issue
+    |]
+
 renderId :: GraphState -> Id -> GW
 renderId gs id =
   case id of
@@ -637,7 +656,7 @@ renderId gs id =
     U uid -> renderUid gs uid
     PT ptid -> renderPTid gs ptid
     OT otid -> renderOTid gs otid
-
+    I iid -> renderIid gs iid
 
 votesById :: GraphState -> Id -> Maybe (S.Set Uid, S.Set Uid, S.Set Uid, S.Set Uid)
 votesById gs id =
@@ -2296,6 +2315,41 @@ postNewCommentR =
 getLinksBetweenR :: Eid -> Eid -> Handler RepHtml
 getLinksBetweenR = undefined
 
+getIssueR :: Iid -> Handler RepHtml
+getIssueR iid =
+  do ctx <- getContext (Just $ I iid)
+     let gs = cgs ctx
+     let missue = gs ^. issues ^. at iid
+     layout $
+       [whamlet|
+         ^{cgw ctx}
+
+         <center>
+           $maybe issue <- missue
+             <h1>#{_iname issue}
+               $maybe desc <- _idesc issue
+                 <h2>#{desc}  
+
+           $nothing
+             deleted issue
+       |]
+
+getNewIssueR :: Handler RepHtml
+getNewIssueR = undefined
+
+postNewIssueR :: Handler RepHtml
+postNewIssueR = undefined
+
+postNewIssueTagR :: Lid -> Iid -> Handler RepHtml
+postNewIssueTagR lid iid = undefined
+
+postDelIssue :: Iid -> Handler RepHtml
+postDelIssue iid = undefined
+
+postDelIssueTag :: Lid -> Iid -> Handler RepHtml
+postDelIssueTag lid iid = undefined
+
+
 getWikiR :: Txt -> Handler RepHtml
 getWikiR wiki =
   do ctx <- getContext Nothing
@@ -2412,7 +2466,7 @@ getRSStateR =
      jsonToRepJson (cgs ctx)
 
 main :: IO ()
-main = 
+main =
   bracket
     (openLocalState initialGraphState)
     (createCheckpointAndClose)

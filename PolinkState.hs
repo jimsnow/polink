@@ -51,14 +51,14 @@ import Control.Monad.Reader ( ask )
 import Data.Acid            ( AcidState, Query, Update, makeAcidic, openLocalState )
 import Data.Acid.Advanced   ( query', update' )
 import Data.Acid.Local      ( createCheckpointAndClose )
-import Data.SafeCopy        ( base, deriveSafeCopy )
+import Data.SafeCopy        ( base, extension, deriveSafeCopy, Migrate, MigrateFrom, migrate )
 import Data.Time.Calendar (Day)
 import Data.Bits
 
 -- Yesod needs to know its own domain, so it can generate urls appropriately
 -- and so forth.  If True, we use http://polink.org as the domain.  If false,
 -- it's http://localhost:3000.  (This is a kludge.)
-production = True
+production = False
 
 -- We use a 64 bit int to store permissions in the persistent state, but we convert
 -- to a more expressive type when convenient.  (The Int type allows us to extend
@@ -116,9 +116,28 @@ $(deriveSafeCopy 0 'base ''OTid)
 newtype UTid = UTid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''UTid)
 
-data Id = E Eid | L Lid | C Cid | U Uid | PT PTid | OT OTid | UT UTid
+newtype Iid = Iid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
+$(deriveSafeCopy 0 'base ''Iid)
+
+data Id0 = E0 Eid | L0 Lid | C0 Cid | U0 Uid | PT0 PTid | OT0 OTid | UT0 UTid
   deriving (Eq, Ord, Show, Read, Data, Typeable)
-$(deriveSafeCopy 0 'base ''Id)
+$(deriveSafeCopy 0 'base ''Id0)
+
+data Id = E Eid | L Lid | C Cid | U Uid | PT PTid | OT OTid | UT UTid | I Iid
+  deriving (Eq, Ord, Show, Read, Data, Typeable)
+$(deriveSafeCopy 1 'extension ''Id)
+
+instance Migrate Id where
+  type MigrateFrom Id = Id0
+  migrate id =
+    case id of
+      E0 x -> E x
+      L0 x -> L x
+      C0 x -> C x
+      U0 x -> U x
+      PT0 x -> PT x
+      OT0 x -> OT x
+      UT0 x -> UT x
 
 idToInt :: Id -> Int64
 idToInt id =
@@ -130,6 +149,7 @@ idToInt id =
     PT (PTid ptid) -> ptid
     OT (OTid otid) -> otid
     UT (UTid utid) -> utid
+    I (Iid iid) -> iid
 
 -- All the tag types are persisted as Ints.  This allows us to add new tag types
 -- without migrating data.  We must be carefull, however, never to re-order or delete
@@ -359,6 +379,39 @@ data User = User {
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''User)
 
+data Issue = Issue {
+  _iid     :: Iid,
+  _iname   :: T.Text,
+  _idesc   :: Maybe T.Text,
+  _iwp     :: Maybe Url,
+  _itagged :: S.Set Id
+} deriving (Eq, Ord, Show, Read, Data, Typeable)
+$(deriveSafeCopy 0 'base ''Issue)
+
+data GraphState0 = GraphState0 {
+  _nextId0         :: Counter,
+  _entities0       :: M.Map Eid Entity,
+  _entitiesByName0 :: M.Map T.Text (S.Set Eid),
+  _entitiesByWiki0 :: M.Map Url (S.Set Eid),
+  _links0          :: M.Map Lid Link,
+  _linksBySrc0     :: M.Map Eid (S.Set Lid),
+  _linksByDst0     :: M.Map Eid (S.Set Lid),
+  _comments0       :: M.Map Cid Comment,
+  _cchildren0      :: M.Map Id [Cid],
+  _users0          :: M.Map Uid User,
+  _usersByName0    :: M.Map T.Text Uid,
+  _usersByEmail0   :: M.Map T.Text Uid,
+  _ptags0          :: M.Map PTid (PTag, Eid),
+  _otags0          :: M.Map OTid (OTag, Eid),
+  _utags0          :: M.Map UTid (UTag, Uid),
+  _agree0          :: M.Map Id (S.Set Uid),
+  _disagree0       :: M.Map Id (S.Set Uid),
+  _like0           :: M.Map Id (S.Set Uid),
+  _dislike0        :: M.Map Id (S.Set Uid),
+  _recent0         :: SEQ.Seq Id
+} deriving (Eq, Ord, Show, Read, Data, Typeable)
+$(deriveSafeCopy 0 'base ''GraphState0)
+
 data GraphState = GraphState {
   _nextId         :: Counter,
   _entities       :: M.Map Eid Entity,
@@ -379,14 +432,23 @@ data GraphState = GraphState {
   _disagree       :: M.Map Id (S.Set Uid),
   _like           :: M.Map Id (S.Set Uid),
   _dislike        :: M.Map Id (S.Set Uid),
-  _recent         :: SEQ.Seq Id
+  _recent         :: SEQ.Seq Id,
+  _issues         :: M.Map Iid Issue,
+  _issuetagged    :: M.Map Id (S.Set Iid)
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
-$(deriveSafeCopy 0 'base ''GraphState)
+$(deriveSafeCopy 1 'extension ''GraphState)
+
+instance Migrate GraphState where
+  type MigrateFrom GraphState = GraphState0
+  migrate (GraphState0 a b c d e f g h i j k l m n o p q r s t) =
+    GraphState a b c d e f g h i j k l m n o p q r s t M.empty M.empty
+
 
 makeLenses ''Entity
 makeLenses ''Link
 makeLenses ''Comment
 makeLenses ''User
+makeLenses ''Issue
 makeLenses ''GraphState
 
 initialGraphState =
@@ -410,7 +472,9 @@ initialGraphState =
     _disagree = M.empty,
     _like = M.empty,
     _dislike = M.empty,
-    _recent = SEQ.empty
+    _recent = SEQ.empty,
+    _issues = M.empty,
+    _issuetagged = M.empty
   }
 
 type Err = String
@@ -809,7 +873,50 @@ addLinkU u src lt dst date end money us = toU $ addLink u src lt dst date end mo
 editLinkU u lid src lt dst date end money us = toU $ editLink u lid src lt dst date end money us
 delLinkU u l = toU $ delLink u l
 
+weakInsert :: Ord k => k -> v -> M.Map k v -> M.Map k v
+weakInsert k v m =
+  if M.member k m
+  then m
+  else M.insert k v m
+
+-- Add issue.
+addIssue :: Uid -> Issue -> S Iid
+addIssue uid issue' =
+  do id <- bumpId
+     let iid = Iid id
+     let issue = issue' {_iid = iid}
+     issues %= M.insert iid issue
+     addContrib uid $ I iid
+     return iid
+
+delIssue :: Uid -> Iid -> S ()
+delIssue uid iid =
+  do missue <- use $ issues . at iid
+     case missue of
+       Nothing -> return ()
+       Just issue ->
+         do forM_ (S.toList $ issue ^. itagged)
+                  (\id -> delIssueTag uid id iid)
+     issues %= M.delete iid
+
+addIssueTag :: Uid -> Id -> Iid -> S ()
+addIssueTag uid id iid =
+  do issues . at iid . traverse . itagged %= (S.insert id)
+     issuetagged %= (weakInsert id S.empty) -- make sure the key is present
+     issuetagged . at id . traverse %= (S.insert iid)
+     addContrib uid id
+
+delIssueTag :: Uid -> Id -> Iid -> S ()
+delIssueTag uid id iid =
+  do issues . at iid . traverse . itagged %= (S.delete id)
+     issuetagged . at id . traverse %= (S.delete iid)
+
+addIssueU u i = toU $ addIssue u i
+delIssueU u iid = toU $ delIssue u iid
+addIssueTagU u id iid = toU $ addIssueTag u id iid
+delIssueTagU u id iid = toU $ delIssueTag u id iid
+
 -- Invoke acid-state boilerplate to generate queries and updates.
-$(makeAcidic ''GraphState ['getStateQ, 'bumpIdU, 'getUserQ, 'getUserByNameQ, 'getUserByEmailQ, 'addUserU, 'setUserPermU, 'addCommentU, 'delCommentU, 'removeCommentU, 'addAgreeU, 'addDisagreeU, 'addLikeU, 'addDislikeU, 'addEntityU, 'editEntityU, 'delEntityU, 'addLinkU, 'editLinkU, 'delLinkU, 'addTagU, 'delPTagU, 'delOTagU])
+$(makeAcidic ''GraphState ['getStateQ, 'bumpIdU, 'getUserQ, 'getUserByNameQ, 'getUserByEmailQ, 'addUserU, 'setUserPermU, 'addCommentU, 'delCommentU, 'removeCommentU, 'addAgreeU, 'addDisagreeU, 'addLikeU, 'addDislikeU, 'addEntityU, 'editEntityU, 'delEntityU, 'addLinkU, 'editLinkU, 'delLinkU, 'addTagU, 'delPTagU, 'delOTagU, 'addIssueU, 'delIssueU, 'addIssueTagU, 'delIssueTagU])
 
 
