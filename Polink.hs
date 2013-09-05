@@ -178,6 +178,13 @@ instance Yesod InfluenceGraph
               then ApprootStatic "http://polink.org"
               else ApprootStatic "http://localhost:3001"
     defaultLayout = layout
+{-
+    makeSessionBackend _ =
+      do let minutes = 24 * 60 * 7 -- 1 week
+         let filepath = "mykey.aes"
+         backend <- defaultClientSessionBackend minutes filepath
+         return $ Just backend
+-}
 
 instance YesodAuth InfluenceGraph where
   type AuthId InfluenceGraph = T.Text
@@ -2345,10 +2352,6 @@ getLinksBetweenR :: Eid -> Eid -> Handler RepHtml
 getLinksBetweenR = undefined
 
 
-
-
-
-
 getIssuesR :: Handler RepHtml
 getIssuesR =
   do ctx <- getContext Nothing
@@ -2367,7 +2370,7 @@ getIssuesR =
                  ^{renderId (cgs ctx) (I i)}
                  $if (hasPerm ctx DelIssue)
                    <form method="post" action="@{DelIssueR i}">
-                     <input type="submit" value="delete" />
+                     <input type="submit" value="remove from issue" />
          $if (hasPerm ctx AddIssue)
            <p><a href="@{NewIssueR}">Add an issue</a>
        |]
