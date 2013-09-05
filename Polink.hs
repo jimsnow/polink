@@ -159,10 +159,13 @@ mkYesod "InfluenceGraph" [parseRoutes|
   /ut/#UTid                      UTagR            GET
   /el/#Eid/#Eid                  LinksBetweenR    GET
   /i/#Iid                        IssueR           GET
+  /i/#Iid/dot                    IssueDotR        GET
+  /i/#Iid/svg                    IssueSvgR        GET
+  /i                             IssuesR          GET
   /newissue                      NewIssueR        GET POST
-  /l/#Lid/newissuetag/#Iid       NewIssueTagR     POST
-  /deli/#Iid                     DelIssue         POST
-  /delit/#Lid/#Iid               DelIssueTag      POST
+  /l/#Lid/newissuetag            NewIssueTagR     POST
+  /deli/#Iid                     DelIssueR        POST
+  /delit/#Lid/#Iid               DelIssueTagR     POST
   /wiki/#Txt                     WikiR            GET
   /rsstate                       RSStateR         GET
 |]
@@ -542,16 +545,19 @@ paginateL xs =
        ([whamlet|
           <center>
             <p>
-              showing #{first}-#{last}
-              $if all
-                \ of #{last}
+              $if pseudolen > 0
+                showing #{first}-#{last}
+                $if all
+                  \ of #{last}
+                $else
+                  $if doPrev
+                    \ <a href="@{cr}?page=#{prevpage}">prev</a>
+                  $if doNext
+                    \ <a href="@{cr}?page=#{nextpage}">next</a>
+                  $if doAll
+                    \ <a href="@{cr}?all=1">all</a>
               $else
-                $if doPrev
-                  \ <a href="@{cr}?page=#{prevpage}">prev</a>
-                $if doNext
-                  \ <a href="@{cr}?page=#{nextpage}">next</a>
-                $if doAll
-                  \ <a href="@{cr}?all=1">all</a>
+                \ nothing here
         |], if all then xs else xs'')
        
 
@@ -636,16 +642,22 @@ renderOTid gs otid =
         \ deleted organization tag
     |]
 
-renderIid :: GraphState -> Iid -> GW
-renderIid gs iid =
+renderIid' :: Bool -> GraphState -> Iid -> GW
+renderIid' terse gs iid =
   let missue = gs ^. issues ^. at iid
   in
     [whamlet|
       $maybe issue <- missue
-        \ issue <a href="@{IssueR iid}">#{_iname issue}</a>
+        $if terse
+        $else
+          \ issue
+        \ <a href="@{IssueR iid}">#{_iname issue}</a>
       $nothing
         \ deleted issue
     |]
+
+renderIid = renderIid' False
+renderIidTerse = renderIid' True
 
 renderId :: GraphState -> Id -> GW
 renderId gs id =
@@ -759,20 +771,20 @@ getHomeR =
             <h1><center>Welcome to polink.org, the social network anyone can edit!</center>
             <p><center><a href="@{AboutR}">What is this?</a></center>
             <p><center><a href="@{RSHelpR}">What are those funny colored rectangle things?</a></center>
-            <p><b>Points of interest</b>
+            <p><b>Points of interest:</b>
             <ul>
              <li><a href="@{EntityR (Eid 2)}">US Government</a> (<a href="@{OrgChartR (Eid 2)}">org chart</a>)
              <li><a href="@{EntityR (Eid 11)}">US Presidents</a>
              <li><a href="@{EntityR (Eid 48)}">US Supreme Court</a>
              <li><a href="@{EntityR (Eid 21)}">US Senate</a>
-             <li><a href="@{EntityR (Eid 22)}">US House</a> (help us by adding your representatives)
+             <li><a href="@{EntityR (Eid 22)}">US House</a> (help us out by adding your representatives)
+
+            <p><a href="@{EntitiesR}">all entities</a> <a href="@{IssuesR}">all issues</a> <a href="@{UsersR}">all users</a>
 
             $maybe u <- cmuser ctx
               <p><b>Things to do:</b>
               <p>If some important person is missing from our site, please <a href=@{NewPersonR}>add them</a>.  If you find inaccurate or duplicate information, please leave a comment and click the "dispute" button on that entry.  You can also help us out by visiting a <a href="@{RandomR}">random</a> entity and verifying that the data is correct.  (Use the "verify"/"dispute" buttons.)
               <p>You may also establish a link between two entities by using the clipboard.  For instance, to mark someone as a member of the House, click "copy to clipboard" on that person's page, then navigate to the <a href=@{EntityR (Eid 22)}>US House</a> and create the link with "member of" as the link type.
-
-            <p><a href="@{UsersR}">all users</a> <a href="@{EntitiesR}">all entities</a>
 
             <p><b>Recent Changes</b>
             ^{changes}
@@ -1528,6 +1540,8 @@ mConcat :: Maybe (Maybe a) -> Maybe a
 mConcat (Just x) = x
 mConcat Nothing = Nothing
 
+bTextField = check (bracketLen "text field must be between 3 and 256 characters" 3 256) textField
+
 newPersonForm ment =
   renderDivs $
     eToPerson
@@ -1538,9 +1552,6 @@ newPersonForm ment =
       <*> aopt bTextField "http://en.wikipedia.org/wiki/" (fmap (fmap unUrl . _ewp) ment)
       <*> aopt bTextField "personal website/blog"         (fmap (fmap unUrl . _ehp) ment)
       <*> aopt bTextField "twitter"                       (fmap (fmap unUrl . _etwt) ment)
-  where
-    bTextField = check (bracketLen "text field must be between 3 and 256 characters" 3 256) textField
-
 
 newOrganizationForm ment =
   renderDivs $ 
@@ -1552,8 +1563,6 @@ newOrganizationForm ment =
       <*> aopt bTextField "http://en.wikipedia.org/wiki/" (fmap (fmap unUrl . _ewp) ment)
       <*> aopt bTextField "website/blog"                  (fmap (fmap unUrl . _ehp) ment)
       <*> aopt bTextField "twitter"                       (fmap (fmap unUrl . _etwt) ment)
-  where
-    bTextField = check (bracketLen "text field must be between 3 and 256 characters" 3 256) textField
 
 getNewPersonR' :: Maybe Eid -> Handler RepHtml
 getNewPersonR' meid = 
@@ -1864,6 +1873,7 @@ getLinkR lid =
      let gs = cgs ctx
      cr <- curRoute
      let (linkwidget, mlink) = renderLink (cgs ctx) lid
+     issuetagform <- renderIssueTagForm gs lid
      comments <- renderComments gs (cmuser ctx) (L lid)
      layout
        [whamlet|
@@ -1876,6 +1886,10 @@ getLinkR lid =
          $if (hasPerm ctx DelLink)
            <form method="post" action="@{DelLinkR lid}">
              <input type="submit" value="delete" />
+
+         $if (hasPerm ctx AddIssueTag)
+           <hr>
+           ^{issuetagform}
          <hr>
          ^{renderVotes gs (cmuser ctx) (L lid) cr}
          <hr>
@@ -2159,6 +2173,19 @@ postNewTagR eid =
 
      layout [whamlet|^{w}|]
 
+{-
+commentField :: T.Text -> Field (Handler Int) Textarea Textarea
+commentField s = check lencheck textareaField
+ where
+   lencheck :: Textarea -> Either T.Text Textarea
+   lencheck ta =
+     let len = T.length (unTextarea ta)
+     in if len < 1
+        then Left $ s T.append " must be be at least one character long"
+        else if len > 8192
+             then Left $ s T.append " must be no more than 8192 characters"
+             else Right ta
+-}
 
 newCommentForm parent =
   renderDivs $
@@ -2167,15 +2194,17 @@ newCommentForm parent =
   where
    f :: Textarea -> Id -> (Textarea, Id)
    f = (,)
+
    commentField = check lencheck textareaField
-   lencheck :: Textarea -> Either T.Text Textarea
-   lencheck ta =
-     let len = T.length (unTextarea ta)
-     in if len < 1
-        then Left "comment must be be at least one character long"
-        else if len > 8192
-             then Left "comment must be no more than 8192 characters"
-             else Right ta
+     where
+       lencheck :: Textarea -> Either T.Text Textarea
+       lencheck ta =
+         let len = T.length (unTextarea ta)
+         in if len < 1
+            then Left "comment must be be at least one character long"
+            else if len > 8192
+                 then Left "comment must be no more than 8192 characters"
+                 else Right ta
 
 
 renderComment :: GraphState -> Maybe User -> Cid -> GW
@@ -2315,39 +2344,174 @@ postNewCommentR =
 getLinksBetweenR :: Eid -> Eid -> Handler RepHtml
 getLinksBetweenR = undefined
 
+
+
+
+
+
+getIssuesR :: Handler RepHtml
+getIssuesR =
+  do ctx <- getContext Nothing
+     (pw, is) <- paginateL (M.keys $ (cgs ctx) ^. issues)
+     layout $
+       [whamlet|
+         ^{cgw ctx}
+         <center>
+           <h1>
+             All Issues
+
+         <hr>
+           <ul>
+             $forall i <- is
+               <li>
+                 ^{renderId (cgs ctx) (I i)}
+                 $if (hasPerm ctx DelIssue)
+                   <form method="post" action="@{DelIssueR i}">
+                     <input type="submit" value="delete" />
+         $if (hasPerm ctx AddIssue)
+           <p><a href="@{NewIssueR}">Add an issue</a>
+       |]
+
+
 getIssueR :: Iid -> Handler RepHtml
 getIssueR iid =
   do ctx <- getContext (Just $ I iid)
      let gs = cgs ctx
-     let missue = gs ^. issues ^. at iid
-     layout $
-       [whamlet|
-         ^{cgw ctx}
+     case gs ^. issues ^. at iid of
+       Nothing -> err "deleted issue"
+       Just issue ->
+         do (pw, ids) <- paginateL (S.toList $ issue ^. itagged)
+            layout $
+              [whamlet|
+                ^{cgw ctx}
+                <center>
+                  <h1>#{_iname issue}
+                  $maybe desc <- _idesc issue
+                    <h2>#{desc}
+                  <p>
+                    $maybe wp <- _iwp issue
+                      <a href="http://en.wikipedia.org/wiki/#{wp}">wikipedia</a>
 
-         <center>
-           $maybe issue <- missue
-             <h1>#{_iname issue}
-               $maybe desc <- _idesc issue
-                 <h2>#{desc}  
+                <hr>
+                  <center>
+                    <object data=@{IssueSvgR iid} type="image/svg+xml"></object>
+                <hr>
+                <ul>
+                  ^{pw}
+                  $forall id <- ids
+                    <li>^{renderId gs id}
+                    $if (hasPerm ctx DelIssueTag)
+                      $case id
+                        $of L lid
+                          <form method="post" action="@{DelIssueTagR lid iid}">
+                            <input type="submit" value="delete" />
 
-           $nothing
-             deleted issue
-       |]
+                  ^{pw}
+              |]
+
+newIssueForm missue =
+  renderDivs $
+    (,,)
+      <$> areq bTextField "issue name"                    (fmap _iname missue)
+      <*> aopt bTextField "issue description"             (fmap _idesc missue)
+      <*> aopt bTextField "http://en.wikipedia.org/wiki/" (fmap (fmap unUrl . _iwp) missue)
 
 getNewIssueR :: Handler RepHtml
-getNewIssueR = undefined
+getNewIssueR =
+  do w <-
+       reqAuth
+         "add an issue"
+         AddIssue
+         (\ctx user ->
+           do (widget, enctype) <- generateFormPost (newIssueForm Nothing)
+              return
+                [whamlet|
+                   <h1>Add new issue:
+                   <form method=post action=@{NewIssueR} enctype=#{enctype}>
+                     ^{widget}
+                     <input type=submit value="add issue">
+                |])
+     layout [whamlet|^{w}|]
 
 postNewIssueR :: Handler RepHtml
-postNewIssueR = undefined
+postNewIssueR =
+  do w <- 
+       reqAuth
+         "add issue"
+         AddIssue
+         (\ctx user ->
+             do let gs = cgs ctx 
+                ((result, widget), enctype) <- runFormPost $ newIssueForm Nothing
+                case result of
+                  FormSuccess (name, desc, wp) ->
+                    do ig <- getYesod
+                       miid <- liftIO $ update (acid ig) (AddIssueU (user ^. uid) (Issue (Iid (-1))name desc (fmap Url wp) S.empty))
+                       case miid of
+                         Left err -> return $ errW (T.pack err)
+                         Right iid ->
+                           redirect (IssueR iid) 
+                  _ -> return $ errW "invalid input")
 
-postNewIssueTagR :: Lid -> Iid -> Handler RepHtml
-postNewIssueTagR lid iid = undefined
+     layout [whamlet|^{w}|]
 
-postDelIssue :: Iid -> Handler RepHtml
-postDelIssue iid = undefined
 
-postDelIssueTag :: Lid -> Iid -> Handler RepHtml
-postDelIssueTag lid iid = undefined
+
+
+issueTagForm gs =
+  let is = M.elems (gs ^. issues)
+      sfl = map (\i -> (i ^. iname, i ^. iid)) is
+  in
+    renderTable $ areq (selectFieldList sfl) "" Nothing
+
+msflatten :: Maybe (S.Set a) -> [a]
+msflatten Nothing = []
+msflatten (Just s) = S.toList s
+
+renderIssueTagForm :: GraphState -> Lid -> Handler GW
+renderIssueTagForm gs lid =
+  do (widget, enctype) <- generateFormPost $ issueTagForm gs
+     let issues = msflatten $ gs ^. issuetagged ^. at (L lid)
+     return
+       [whamlet|
+         issues:
+         $forall i <- issues
+           \ ^{renderIidTerse gs i}
+
+         <form method=post action=@{NewIssueTagR lid} enctype=#{enctype}>
+           ^{widget}
+           <input type=submit value="tag issue">
+       |]
+
+postNewIssueTagR :: Lid -> Handler RepHtml
+postNewIssueTagR lid =
+  do w <- 
+       reqAuth
+         "tag issue"
+         AddIssueTag
+         (\ctx user ->
+             do let gs = cgs ctx 
+                ((result, widget), enctype) <- runFormPost $ issueTagForm gs
+                case result of
+                  FormSuccess iid ->
+                    do ig <- getYesod
+                       miid <- liftIO $ update (acid ig) (AddIssueTagU (user ^. uid) (L lid) iid)
+                       case miid of
+                         Left err -> return $ errW (T.pack err)
+                         Right iid ->
+                           redirect (LinkR lid) 
+                  _ -> return $ errW "invalid input")
+
+     layout [whamlet|^{w}|]
+
+
+
+postDelIssueR :: Iid -> Handler RepHtml
+postDelIssueR iid =
+  deleteThing DelIssue "delete issue" (\user -> DelIssueU (user ^. uid) iid) (IssuesR)
+
+postDelIssueTagR :: Lid -> Iid -> Handler RepHtml
+postDelIssueTagR lid iid =
+  deleteThing DelIssueTag "delete issue tag" (\user -> DelIssueTagU (user ^. uid) (L lid) iid) (IssueR iid)
 
 
 getWikiR :: Txt -> Handler RepHtml
@@ -2413,6 +2577,22 @@ getOrgChartDotDateR :: Eid -> Int -> Handler RepPlain
 getOrgChartDotDateR eid date =
   do ctx <- getContext (Just $ E eid)
      return $ RepPlain $ toContent $ orgchartgv (cgs ctx) eid (dayrange $ intToDay date)
+
+
+getIssueDotR :: Iid -> Handler RepPlain
+getIssueDotR iid =
+  do ctx <- getContext (Just $ I iid)
+     return $ RepPlain $ toContent $ issuegv (cgs ctx) iid
+
+getIssueSvgR :: Iid -> Handler RepPlain
+getIssueSvgR iid@(Iid id) =
+  do ctx <- getContext (Just $ I iid)
+     let dot = issuegv (cgs ctx) iid
+     let dotfile = "./nginx/static/issues/" ++ (show id) ++ ".dot"
+     let svgfile = "./nginx/static/issues/" ++ (show id) ++ ".svg"
+     liftIO $ writeFile dotfile dot
+     _ <- liftIO $ system $ "dot -Tsvg " ++ dotfile ++ " >" ++ svgfile
+     sendFile "image/svg+xml" svgfile
 
 -- Dump graphviz source for the org chart to a file, then run graphviz to
 -- generate svg, return that to the client.  We ought to be doing this with

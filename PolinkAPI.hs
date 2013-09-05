@@ -63,6 +63,11 @@ resolveUids gs uids =
   where
     f uid = gs ^. users . at uid
 
+resolveLids gs lids =
+  mapMaybe f lids
+  where
+    f lid = gs ^. links . at lid
+
 getAllLinks :: GraphState -> Eid -> [Link]
 getAllLinks gs eid =
   let src = mStoL $ gs ^. linksBySrc . at eid
@@ -158,6 +163,37 @@ mapLeft :: (a -> c) -> Either a b -> c -> c
 mapLeft f (Right _ ) def = def
 mapLeft f (Left x) def = f x
 
+entitygv :: Entity -> String
+entitygv e =
+  " " ++ (show (e^. ecname)) ++
+  (case e ^. etype of
+    Person _ -> " [shape=plaintext fontsize=8 URL=\""
+    Organization _ -> " [shape=box fontsize=9 URL=\"") ++
+  (eurl (_eid e)) ++ "\" target=\"_top\"]\n"
+
+linkgv :: GraphState -> Link -> String
+linkgv gs l =
+  case (do s <- gs ^. entities ^. at (l ^. lsrc) 
+           d <- gs ^. entities ^. at (l ^. ldst)
+           return (s,d)) of
+    Nothing -> ""
+    Just (src, dst) ->
+      let color =
+            case (l ^. ltype) of
+              NL _ -> "red"
+              PL plt ->
+                case toEnum $ unPLType plt of 
+                  HoldsOffice -> "violet"
+                  SubOrg -> "blue"
+                  Member -> "green"
+                  _ -> "bluegreen"
+      in
+        " " ++ (show $ src ^. ecname) ++ " -> " ++ (show $ dst ^. ecname) ++
+        " [color=" ++ color ++
+        " URL=\"" ++ (linkurl (l ^. lid)) ++
+        "\" target=\"_top\"]\n"
+
+
 orgchartgv :: GraphState -> Eid -> Maybe (Day, Day) -> String
 orgchartgv gs eid mrange =
   case gs ^. entities . at eid of
@@ -176,18 +212,12 @@ orgchartgv gs eid mrange =
                        (\(parent, _, members, _) -> mapLeft (\count -> [(parent,count)]) members []) oc
       in
         "digraph {\n graph [bgcolor=\"transparent\" aspect=1.5]\n" ++
-          (orgf root) ++
-          (concatMap orgf allOrgs) ++
-          (concatMap personf (allOffs++allPeople)) ++
+          (entitygv root) ++
+          (concatMap entitygv allOrgs) ++
+          (concatMap entitygv (allOffs ++ allPeople)) ++
           (concatMap truncf allTrunc) ++
           (concatMap linkf oc) ++ "}\n"
   where
-    orgf org    =
-      " " ++ (show (org ^. ecname)) ++
-      " [shape=box fontsize=9 URL=\"" ++ (eurl (_eid org)) ++ "\" target=\"_top\"]\n"
-    personf per =
-      " " ++ (show (per ^. ecname)) ++
-      " [shape=plaintext fontsize=8 URL=\"" ++ (eurl (_eid per)) ++ "\" target=\"_top\"]\n"
     orglinkf src link dst =
       " " ++ src ++ " -> " ++ (show (dst ^. ecname)) ++
       " [color=blue  URL=\"" ++ (linkurl (_lid link)) ++ "\" target=\"_top\"]\n"
@@ -213,9 +243,27 @@ orgchartgv gs eid mrange =
 
     eidtuple ent = (_eid ent, ent)
 
+-- Generate a graph from all the links associated with a given issues.
 
---    eidtuple :: (Entity, Link) -> (Eid, (Entity, Link))
---    eidtuple t@(ent,_) = (_eid ent, t)
+filterLids :: [Id] -> [Lid]
+filterLids [] = []
+filterLids ((L lid):xs) = lid : (filterLids xs)
+filterLids (_:xs) = filterLids xs
+
+issuegv :: GraphState -> Iid -> String
+issuegv gs iid =
+  "digraph {\n graph [bgcolor=\"transparent\" aspect=1.5]\n" ++
+  (concatMap entitygv ents) ++
+  (concatMap (linkgv gs) links) ++
+  "}\n"
+  where  
+    links = case gs ^. issues ^. at iid of
+              Nothing -> []
+              Just issue -> resolveLids gs (filterLids $ S.toList $ issue ^. itagged)
+    eids = concatMap (\l-> [l ^. lsrc, l ^. ldst]) links
+
+    -- remove duplicates by converting to a set
+    ents = resolveEids gs (S.toList $ S.fromList eids)
 
 
 msquish :: Maybe (S.Set a) -> [a]

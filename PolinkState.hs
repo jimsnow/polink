@@ -58,12 +58,12 @@ import Data.Bits
 -- Yesod needs to know its own domain, so it can generate urls appropriately
 -- and so forth.  If True, we use http://polink.org as the domain.  If false,
 -- it's http://localhost:3000.  (This is a kludge.)
-production = False
+production = True
 
 -- We use a 64 bit int to store permissions in the persistent state, but we convert
 -- to a more expressive type when convenient.  (The Int type allows us to extend
 -- permissions by using more bits without having to migrate to a new type.)
-data Perm = BasicAccess | Read | AddComment | DelComment | AddLink | EditLink | DelLink | AddEntity | EditEntity | DelEntity | AddTag | DelTag | SetPerm | Admin deriving (Eq, Ord, Show, Enum)
+data Perm = BasicAccess | Read | AddComment | DelComment | AddLink | EditLink | DelLink | AddEntity | EditEntity | DelEntity | AddTag | DelTag | SetPerm | Admin | AddIssue | EditIssue | DelIssue | AddIssueTag | DelIssueTag deriving (Eq, Ord, Show, Enum)
 
 permTest :: Int64 -> Perm -> Bool
 permTest i p = testBit i (fromEnum p)
