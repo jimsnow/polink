@@ -82,8 +82,8 @@ overlap (Just (astart, aend)) mastart maend =
 
 -- Get all the links of a particular type.
 getLinks :: GraphState -> Eid -> LinkType -> Maybe (Day, Day) -> Bool -> [(Eid, Link)]
-getLinks gs eid lt mrange fwd =
-  case gs ^. (if fwd then linksBySrc else linksByDst) . at eid of
+getLinks gs eid lt mrange rev =
+  case gs ^. (if rev then linksBySrc else linksByDst) . at eid of
     Nothing -> []
     Just lids ->
       mapMaybe f (S.toList lids)
@@ -92,19 +92,29 @@ getLinks gs eid lt mrange fwd =
               Nothing -> Nothing
               Just link ->
                 if (link ^. ltype) == lt && overlap mrange (Just $ link ^. ldate) (link ^. lend)
-                then Just ((link ^. lsrc), link)
+                then Just ((link ^. (if rev then ldst else lsrc)), link)
                 else Nothing
 
 -- Find all directly reachable suborganizations of an organization.
 subOrgs :: GraphState -> Eid -> Maybe (Day, Day) -> [(Eid, Link)]
 subOrgs gs eid mrange = getLinks gs eid (PL $ PLType $ fromEnum SubOrg) mrange False
 
+superOrgs :: GraphState -> Eid -> Maybe (Day, Day) -> [(Eid, Link)]
+superOrgs gs eid mrange = getLinks gs eid (PL $ PLType $ fromEnum SubOrg) mrange True
+
 -- Find all members of an org.
 members :: GraphState -> Eid -> Maybe (Day, Day) -> [(Eid, Link)]
 members gs eid mrange = getLinks gs eid (PL $ PLType $ fromEnum Member) mrange False
 
+isMember :: GraphState -> Eid -> Maybe (Day, Day) -> [(Eid, Link)]
+isMember gs eid mrange = getLinks gs eid (PL $ PLType $ fromEnum Member) mrange True
+
+-- Find all holders of an office.
 offHolders :: GraphState -> Eid -> Maybe (Day, Day) -> [(Eid, Link)]
 offHolders gs eid mrange = getLinks gs eid (PL $ PLType $ fromEnum HoldsOffice) mrange False
+
+officesHeld :: GraphState -> Eid -> Maybe (Day, Day) -> [(Eid, Link)]
+officesHeld gs eid mrange = getLinks gs eid (PL $ PLType $ fromEnum HoldsOffice) mrange True
 
 -- All suborgs reachable from an org.
 reachableSubOrgs :: GraphState -> Eid -> Maybe (Day, Day) -> S.Set Eid
@@ -123,6 +133,27 @@ reachableSubOrgs gs eid mrange =
            let new = L.filter (\x -> not $ S.member x visited) (map fst $ subOrgs gs e mrange)
            in go (S.union unvs (S.fromList new)) (S.insert e visited)
 
+-- All superorgs reachable from an org.
+reachableSuperOrgs :: GraphState -> [Eid] -> Maybe (Day, Day) -> (S.Set Eid, S.Set Link)
+reachableSuperOrgs gs eids mrange =
+  go (S.fromList eids) S.empty S.empty
+  where
+    go unvisited visited links =
+      if unvisited == S.empty
+      then (visited, links)
+      else
+        let (e,unvs) = S.deleteFindMin unvisited
+        in
+          if (S.member e visited)
+          then go unvs visited links
+          else
+            let new = superOrgs gs e mrange
+            in go (S.union unvs (S.fromList (L.filter (\x -> not $ S.member x visited) (map fst new))))
+                  (S.insert e visited)
+                  (S.union links (S.fromList (map snd new)))
+
+
+-- If an organization has more members than this, we just show membership count.
 maxmembers = 20
 
 -- Returns, for each entity, its sub-organizations, members, and office holders.
@@ -171,22 +202,40 @@ entitygv e =
     Organization _ -> " [shape=box fontsize=9 URL=\"") ++
   (eurl (_eid e)) ++ "\" target=\"_top\"]\n"
 
+
+-- Some link types make better visual sense if they're reversed.
+lswap l src dst =
+  case (l ^. ltype) of
+    PL plt ->
+      case toEnum $ unPLType plt of 
+                  HoldsOffice -> rev
+                  SubOrg -> rev
+                  Member -> rev
+                  _ -> fwd
+    NL _ -> fwd
+
+  where
+    fwd = (src, dst)
+    rev = (dst, src)
+
+
 linkgv :: GraphState -> Link -> String
 linkgv gs l =
   case (do s <- gs ^. entities ^. at (l ^. lsrc) 
            d <- gs ^. entities ^. at (l ^. ldst)
            return (s,d)) of
     Nothing -> ""
-    Just (src, dst) ->
-      let color =
+    Just (src', dst') ->
+      let (src, dst) = lswap l src' dst'
+          color =
             case (l ^. ltype) of
               NL _ -> "red"
               PL plt ->
                 case toEnum $ unPLType plt of 
-                  HoldsOffice -> "violet"
-                  SubOrg -> "blue"
-                  Member -> "green"
-                  _ -> "bluegreen"
+                  HoldsOffice -> "navy"
+                  SubOrg -> "blue4"
+                  Member -> "lightseagreen"
+                  _ -> "green"
       in
         " " ++ (show $ src ^. ecname) ++ " -> " ++ (show $ dst ^. ecname) ++
         " [color=" ++ color ++
@@ -220,13 +269,13 @@ orgchartgv gs eid mrange =
   where
     orglinkf src link dst =
       " " ++ src ++ " -> " ++ (show (dst ^. ecname)) ++
-      " [color=blue  URL=\"" ++ (linkurl (_lid link)) ++ "\" target=\"_top\"]\n"
+      " [color=blue4  URL=\"" ++ (linkurl (_lid link)) ++ "\" target=\"_top\"]\n"
     memlinkf src link dst =
       " " ++ src ++ " -> " ++ (show (dst ^. ecname)) ++
-      " [color=green URL=\"" ++ (linkurl (_lid link)) ++ "\" target=\"_top\"]\n"
+      " [color=lightseagreen URL=\"" ++ (linkurl (_lid link)) ++ "\" target=\"_top\"]\n"
     offlinkf src link dst =
       " " ++ src ++ " -> " ++ (show (dst ^. ecname)) ++
-      " [color=violet URL=\"" ++ (linkurl (_lid link)) ++ "\" target=\"_top\"]\n"
+      " [color=navy URL=\"" ++ (linkurl (_lid link)) ++ "\" target=\"_top\"]\n"
 
     linkf (ent, suborgs, members, offs) =
       let srcname = show (ent ^. ecname)
@@ -250,6 +299,8 @@ filterLids [] = []
 filterLids ((L lid):xs) = lid : (filterLids xs)
 filterLids (_:xs) = filterLids xs
 
+unique xs = S.toList (S.fromList xs)
+
 issuegv :: GraphState -> Iid -> String
 issuegv gs iid =
   "digraph {\n graph [bgcolor=\"transparent\" aspect=1.5]\n" ++
@@ -257,13 +308,35 @@ issuegv gs iid =
   (concatMap (linkgv gs) links) ++
   "}\n"
   where  
-    links = case gs ^. issues ^. at iid of
-              Nothing -> []
-              Just issue -> resolveLids gs (filterLids $ S.toList $ issue ^. itagged)
-    eids = concatMap (\l-> [l ^. lsrc, l ^. ldst]) links
+    directlinks = case gs ^. issues ^. at iid of
+                   Nothing -> []
+                   Just issue -> resolveLids gs (filterLids $ S.toList $ issue ^. itagged)
+    directeids = concatMap (\l-> [l ^. lsrc, l ^. ldst]) directlinks
+
+    indirectlinks = allParentLinks gs directeids Nothing
+    links = unique ((reverse indirectlinks) ++ directlinks)  
 
     -- remove duplicates by converting to a set
-    ents = resolveEids gs (S.toList $ S.fromList eids)
+    ents = resolveEids gs (unique $ concatMap (\l-> [l ^. lsrc, l ^. ldst]) links)
+
+allParentLinks :: GraphState -> [Eid] -> Maybe (Day, Day) -> [Link]
+allParentLinks gs eids mrange =
+  let members :: [(Eid, Link)]
+      members = concatMap (\eid -> isMember gs eid Nothing) eids
+      membereids = map fst members
+      memberlids = map snd members
+
+      offices :: [(Eid, Link)]
+      offices = concatMap (\eid -> officesHeld gs eid Nothing) eids
+      officeeids = map fst offices
+      officelids = map snd offices
+ 
+      supers :: (S.Set Eid, S.Set Link)
+      supers = reachableSuperOrgs gs (eids ++ membereids ++ officeeids) mrange
+      supereids = S.toList $ fst supers
+      superlids = S.toList $ snd supers
+  in
+    memberlids ++ officelids ++ superlids
 
 
 msquish :: Maybe (S.Set a) -> [a]

@@ -904,7 +904,7 @@ addIssueTag uid id iid =
   do issues . at iid . traverse . itagged %= (S.insert id)
      issuetagged %= (weakInsert id S.empty) -- make sure the key is present
      issuetagged . at id . traverse %= (S.insert iid)
-     addContrib uid id
+     addContrib uid (I iid)
 
 delIssueTag :: Uid -> Id -> Iid -> S ()
 delIssueTag uid id iid =

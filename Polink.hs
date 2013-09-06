@@ -17,13 +17,14 @@ import Yesod hiding (update, Entity)
 import Yesod.Form.Jquery
 import Yesod.Auth
 import Yesod.Auth.BrowserId
-import Network.HTTP.Conduit(Manager, newManager, def)
+import Web.ClientSession(getDefaultKey)
+import Network.HTTP.Conduit (Manager, newManager, def)
 import Control.Applicative
-import Control.Monad(liftM)
+import Control.Monad (liftM)
 import Data.Acid
 import Data.Acid.Local
-import Data.Acid.Advanced(query', update')
-import Control.Exception(bracket)
+import Data.Acid.Advanced (query', update')
+import Control.Exception (bracket)
 import Control.Lens -- hiding (left, right)
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -36,13 +37,14 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy.Char8 as LB8
 import Text.Julius
-import Text.Markdown(markdown, def)
+import Text.Markdown (markdown, def)
 import Data.Time.Calendar (Day, toGregorian, addDays, Day(..))
 import qualified Data.Char as C (toLower)
 import System.Random (getStdRandom, randomR)
 import System.Process (runCommand, system)
-import Data.Time.Clock (getCurrentTime, utctDay)
+import Data.Time.Clock (getCurrentTime, utctDay, secondsToDiffTime)
 import Text.Blaze.Internal (text)
+import Data.Foldable
 
 import PolinkState
 import PolinkAPI
@@ -170,7 +172,6 @@ mkYesod "InfluenceGraph" [parseRoutes|
   /rsstate                       RSStateR         GET
 |]
 
-
 instance Yesod InfluenceGraph
   where
     maximumContentLength _ _ = 2 * 1024 * 1024 -- 2MB
@@ -178,13 +179,14 @@ instance Yesod InfluenceGraph
               then ApprootStatic "http://polink.org"
               else ApprootStatic "http://localhost:3001"
     defaultLayout = layout
-{-
     makeSessionBackend _ =
-      do let minutes = 24 * 60 * 7 -- 1 week
-         let filepath = "mykey.aes"
-         backend <- defaultClientSessionBackend minutes filepath
-         return $ Just backend
--}
+      do key <- getDefaultKey
+         return $ Just $ clientSessionBackend key (60 * 24 * 14)
+--      do backend <- defaultClientSessionBackend (24*60*7) "mykey.aes"
+--         return $ Just backend
+
+--      let setTimeout cookie = cookie { setCookieMaxAge = Just week }
+--      in fmap (customizeSessionCookies setTimeout)
 
 instance YesodAuth InfluenceGraph where
   type AuthId InfluenceGraph = T.Text
@@ -751,17 +753,29 @@ renderVotesUser gs muser id cr  =
           ^{w "disliked by" dislikes  "dislike"  "add as foe"}
         |]
 
+mergedups :: Eq a => [a] -> [(a, Int)]
+mergedups [] = []
+mergedups (x:xs) = go (xs) x 1
+  where
+    go [] last count = [(last,count)]
+    go (x:xs) last count =
+      if x == last
+      then go xs last (count+1)
+      else (last, count) : go xs x 1 
+
 
 recentChanges :: GraphState -> SEQ.Seq Id -> Handler GW
 recentChanges gs allids =
   do (pw,ids) <- paginate allids
-     let idws = fmap (renderId gs) ids
+     let idws = map (\(id, count) -> (renderId gs id, count)) (mergedups $ toList ids)
      return $
        [whamlet|
          ^{pw}
          <ul>
-           $forall idw <- idws
+           $forall (idw, count) <- idws
              <li> ^{idw}
+               $if count > 1
+                 \ (#{show count} changes)
          ^{pw}
        |]
 
@@ -2370,7 +2384,7 @@ getIssuesR =
                  ^{renderId (cgs ctx) (I i)}
                  $if (hasPerm ctx DelIssue)
                    <form method="post" action="@{DelIssueR i}">
-                     <input type="submit" value="remove from issue" />
+                     <input type="submit" value="delete issue" />
          $if (hasPerm ctx AddIssue)
            <p><a href="@{NewIssueR}">Add an issue</a>
        |]
@@ -2407,7 +2421,7 @@ getIssueR iid =
                       $case id
                         $of L lid
                           <form method="post" action="@{DelIssueTagR lid iid}">
-                            <input type="submit" value="delete" />
+                            <input type="submit" value="remove from issue" />
 
                   ^{pw}
               |]
