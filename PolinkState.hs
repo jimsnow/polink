@@ -75,9 +75,9 @@ perms :: [Perm] -> Int64
 perms ps = foldl permSet 0 ps
 
 defaultPerm :: Int64
-defaultPerm = perms [BasicAccess, Read, AddComment, AddLink, AddEntity, AddTag]
+defaultPerm = perms [BasicAccess, Read, AddComment, AddLink, AddEntity, AddTag, AddIssueTag]
 
-editorPerm = perms [BasicAccess, Read, AddComment, AddLink, AddEntity, AddTag, EditLink, DelLink, EditEntity, DelEntity, DelComment, DelTag]
+editorPerm = perms [BasicAccess, Read, AddComment, AddLink, AddEntity, AddTag, EditLink, DelLink, EditEntity, DelEntity, DelComment, DelTag, AddIssue, DelIssue, AddIssueTag, DelIssueTag]
 
 adminPerm = complement 0
 commentOnlyPerm = perms [BasicAccess, Read, AddComment]
@@ -95,27 +95,36 @@ type Counter = Int64
 newtype Url = Url {unUrl:: T.Text}  deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Url)
 
+-- Everything has a unique ID.
+-- Entity ID
 newtype Eid = Eid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Eid)
 
+-- Link ID
 newtype Lid = Lid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Lid)
 
+-- Comment ID
 newtype Cid = Cid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Cid)
 
+-- User ID
 newtype Uid = Uid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Uid)
 
+-- Person Tag ID
 newtype PTid = PTid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''PTid)
 
+-- Org Tag Id
 newtype OTid = OTid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''OTid)
 
+-- User Tag ID
 newtype UTid = UTid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''UTid)
 
+-- Issue ID
 newtype Iid = Iid Counter deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Iid)
 
@@ -123,6 +132,7 @@ data Id0 = E0 Eid | L0 Lid | C0 Cid | U0 Uid | PT0 PTid | OT0 OTid | UT0 UTid
   deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Id0)
 
+-- Supertype of all IDs.
 data Id = E Eid | L Lid | C Cid | U Uid | PT PTid | OT OTid | UT UTid | I Iid
   deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 1 'extension ''Id)
@@ -139,6 +149,7 @@ instance Migrate Id where
       OT0 x -> OT x
       UT0 x -> UT x
 
+-- Convert any ID to an Int.
 idToInt :: Id -> Int64
 idToInt id =
   case id of
@@ -176,7 +187,7 @@ data OrgTag =
 newtype OTag = OTag {unOTag :: Int} deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''OTag)
 
-
+-- Not implemented, but it's supported by the data model.
 data UserTag =
   Friendly | Helpful | WellInformed 
     deriving (Eq, Ord, Show, Read, Data, Typeable, Enum)
@@ -184,11 +195,14 @@ data UserTag =
 newtype UTag = UTag {unUTag :: Int} deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''UTag)
 
+-- An entity can be a person or an organization, and either way, you'll need to
+-- store some tags.
 data EntityType =
   Person (M.Map PTag PTid) | Organization (M.Map OTag OTid)
     deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''EntityType)
 
+-- Helpful combinators for manipulating entities via lenses.
 traversePerson :: Traversal EntityType EntityType (M.Map PTag PTid) (M.Map PTag PTid)
 traversePerson f (Person m) = Person <$> f m
 traversePerson _ o@(Organization _) = pure o
@@ -214,17 +228,17 @@ timeOverlap astart aend bstart bend =
     mlt _ Nothing = False
     mlt a b       = a < b
 
-
+-- An Entity.
 data Entity = Entity {
   _eid      :: Eid,
-  _ecname   :: T.Text,
-  _elname   :: T.Text,
-  _etype    :: EntityType,
-  _ebirth   :: Maybe (Day, Bool),
-  _edeath   :: Maybe (Day, Bool),
-  _ewp      :: Maybe Url,
-  _etwt     :: Maybe Url,
-  _ehp      :: Maybe Url
+  _ecname   :: T.Text,            -- common name
+  _elname   :: T.Text,            -- official/legal name
+  _etype    :: EntityType,        -- type of entity
+  _ebirth   :: Maybe (Day, Bool), -- birthdate or formation date
+  _edeath   :: Maybe (Day, Bool), -- date of death or end of organization
+  _ewp      :: Maybe Url,         -- wikipedia link (just the last bit, though)
+  _etwt     :: Maybe Url,         -- twitter (url or @foo)
+  _ehp      :: Maybe Url          -- home page
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Entity)
 
@@ -233,7 +247,7 @@ $(deriveSafeCopy 0 'base ''Money)
 
 -- Don't re-order.
 data PosLinkType =
-  Agree | Endorse | Praise | Contribute | Assist | Marry | Romantic | ParentOf | Member | StudentOf | Award | BestowTitle | DoFavor | Nominate | Appoint | MakeDeal | SubOrg | Invest | Retire | Elect | WorksFor | ContractsFor | HoldsOffice | AsksForHelp | Forgive | Appologize | Defend | Protect | Trust
+  Agree | Endorse | Praise | Contribute | Assist | Marry | Romantic | ParentOf | Member | StudentOf | Award | BestowTitle | DoFavor | Nominate | Appoint | MakeDeal | SubOrg | Invest | Retire | Elect | WorksFor | ContractsFor | HoldsOffice | AsksForHelp | Forgive | Appologize | Defend | Protect | Trust | Manage
     deriving (Eq, Ord, Show, Read, Data, Typeable, Enum)
 
 -- Links that are positive in both directions.
@@ -259,7 +273,7 @@ $(deriveSafeCopy 0 'base ''PLType)
 
 -- Don't re-order.
 data NegLinkType =
-  Disagree | Criticize | Discredit | Condemn | Accuse | Sue | Fine | Hinder | Fire | AcceptResignation | Resign | Divorce | Breakup | Assault | Threaten | Kill | Divest | Split | Recall | DeclinesToHelp | EndsRelationship | Insult | Oppose | Distrust | Ridicule
+  Disagree | Criticize | Discredit | Condemn | Accuse | Sue | Fine | Hinder | Fire | AcceptResignation | Resign | Divorce | Breakup | Assault | Threaten | Kill | Divest | Split | Recall | DeclinesToHelp | EndsRelationship | Insult | Oppose | Distrust | Ridicule | Attack
     deriving (Eq, Ord, Show, Read, Data, Typeable, Enum)
 
 -- Links that are negative in both directions.
@@ -314,6 +328,7 @@ lToText (PL pl) =
     Defend ->       "defends"
     Protect ->      "protects"
     Trust ->        "trusts"
+    Manage ->       "manages/governs"
 
 lToText (NL nl) =
   case toEnum $ unNLType nl of
@@ -342,52 +357,58 @@ lToText (NL nl) =
     Oppose ->       "opposes"
     Distrust ->     "is suspicious of"
     Ridicule ->     "ridicules"
+    Attack ->       "attacks"
 
+-- A directional link between two entities.
 data Link = Link {
   _lid     :: Lid,
-  _lsrc    :: Eid,
-  _ldst    :: Eid,
-  _ltype   :: LinkType,
-  _ldate   :: (Day, Bool),
-  _lend    :: Maybe (Day, Bool),
-  _lmoney  :: Maybe Money,
-  _lurl    :: [Url]
+  _lsrc    :: Eid,               -- subject
+  _ldst    :: Eid,               -- object
+  _ltype   :: LinkType,          -- verb
+  _ldate   :: (Day, Bool),       -- date of event, or start date
+  _lend    :: Maybe (Day, Bool), -- end date, if applicable
+  _lmoney  :: Maybe Money,       -- any money involved (applicable to a few link types)
+  _lurl    :: [Url]              -- references
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Link)
 
+-- A comment.
 data Comment = Comment {
   _cid      :: Cid,
-  _author   :: Uid,
-  _contents :: Maybe T.Text,
-  _parent   :: Id
+  _author   :: Uid,           -- user that wrote the comment
+  _contents :: Maybe T.Text,  -- markdown text, or Nothing if it's been deleted
+  _parent   :: Id             -- comments can be attached to anything
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Comment)
 
+-- A user
 data User = User {
   _uid       :: Uid,
-  _authority :: Int64,
-  _name      :: T.Text,
-  _email     :: [T.Text],
-  _profile   :: Maybe T.Text,
-  _contrib   :: SEQ.Seq Id,
-  _changes   :: SEQ.Seq Id,
-  _agrees    :: S.Set Id,
-  _disagrees :: S.Set Id,
-  _likes     :: S.Set Id,
-  _dislikes  :: S.Set Id,
-  _usertags  :: M.Map UTag UTid
+  _authority :: Int64,          -- permissions
+  _name      :: T.Text,         -- user name
+  _email     :: [T.Text],       -- email (unique identifier required by persona)
+  _profile   :: Maybe T.Text,   -- not used currently
+  _contrib   :: SEQ.Seq Id,     -- everything this user has modified
+  _changes   :: SEQ.Seq Id,     -- not used, here by accident
+  _agrees    :: S.Set Id,       -- everything this user validates
+  _disagrees :: S.Set Id,       -- everything this user disputes
+  _likes     :: S.Set Id,       -- everything this user likes
+  _dislikes  :: S.Set Id,       -- everything this user dislikes
+  _usertags  :: M.Map UTag UTid -- usertags (not implemented)
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''User)
 
+-- An issue
 data Issue = Issue {
   _iid     :: Iid,
-  _iname   :: T.Text,
-  _idesc   :: Maybe T.Text,
-  _iwp     :: Maybe Url,
-  _itagged :: S.Set Id
+  _iname   :: T.Text,         -- name of issue
+  _idesc   :: Maybe T.Text,   -- description of issue
+  _iwp     :: Maybe Url,      -- wikipedia page describing issue
+  _itagged :: S.Set Id        -- all the things that are tagged as related to this issue
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''Issue)
 
+-- Old version of GraphState.
 data GraphState0 = GraphState0 {
   _nextId0         :: Counter,
   _entities0       :: M.Map Eid Entity,
@@ -412,38 +433,40 @@ data GraphState0 = GraphState0 {
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 0 'base ''GraphState0)
 
+-- Root type for our application state.
 data GraphState = GraphState {
-  _nextId         :: Counter,
-  _entities       :: M.Map Eid Entity,
-  _entitiesByName :: M.Map T.Text (S.Set Eid),
-  _entitiesByWiki :: M.Map Url (S.Set Eid),
-  _links          :: M.Map Lid Link,
-  _linksBySrc     :: M.Map Eid (S.Set Lid),
-  _linksByDst     :: M.Map Eid (S.Set Lid),
-  _comments       :: M.Map Cid Comment,
-  _cchildren      :: M.Map Id [Cid],
-  _users          :: M.Map Uid User,
-  _usersByName    :: M.Map T.Text Uid,
-  _usersByEmail   :: M.Map T.Text Uid,
-  _ptags          :: M.Map PTid (PTag, Eid),
-  _otags          :: M.Map OTid (OTag, Eid),
-  _utags          :: M.Map UTid (UTag, Uid),
-  _agree          :: M.Map Id (S.Set Uid),
-  _disagree       :: M.Map Id (S.Set Uid),
-  _like           :: M.Map Id (S.Set Uid),
-  _dislike        :: M.Map Id (S.Set Uid),
-  _recent         :: SEQ.Seq Id,
-  _issues         :: M.Map Iid Issue,
-  _issuetagged    :: M.Map Id (S.Set Iid)
+  _nextId         :: Counter,                  -- unique ID generator, shared by everything
+  _entities       :: M.Map Eid Entity,         -- all entities by Eid
+  _entitiesByName :: M.Map T.Text (S.Set Eid), -- all entities by name
+  _entitiesByWiki :: M.Map Url (S.Set Eid),    -- all entities by wikipedia address
+  _links          :: M.Map Lid Link,           -- all links by Lid
+  _linksBySrc     :: M.Map Eid (S.Set Lid),    -- all links out from source Eid
+  _linksByDst     :: M.Map Eid (S.Set Lid),    -- all links in to destination Eid
+  _comments       :: M.Map Cid Comment,        -- all comments by Cid
+  _cchildren      :: M.Map Id [Cid],           -- all child comments of a given Id
+  _users          :: M.Map Uid User,           -- all users by Uid
+  _usersByName    :: M.Map T.Text Uid,         -- all users by name
+  _usersByEmail   :: M.Map T.Text Uid,         -- all users by email
+  _ptags          :: M.Map PTid (PTag, Eid),   -- all person tags by PTid
+  _otags          :: M.Map OTid (OTag, Eid),   -- all org tags by OTid
+  _utags          :: M.Map UTid (UTag, Uid),   -- all user tags by UTid
+  _agree          :: M.Map Id (S.Set Uid),     -- for any Id, all verifiers
+  _disagree       :: M.Map Id (S.Set Uid),     -- for any Id, all disputers
+  _like           :: M.Map Id (S.Set Uid),     -- for any Id, everyone that likes it
+  _dislike        :: M.Map Id (S.Set Uid),     -- for any Id, everyone that dislikes it
+  _recent         :: SEQ.Seq Id,               -- recently modified/updated Ids
+  _issues         :: M.Map Iid Issue,          -- all issues by iid
+  _issuetagged    :: M.Map Id (S.Set Iid)      -- for any Id, list of issues it's related to
 } deriving (Eq, Ord, Show, Read, Data, Typeable)
 $(deriveSafeCopy 1 'extension ''GraphState)
 
+-- I needed to add some fields...
 instance Migrate GraphState where
   type MigrateFrom GraphState = GraphState0
   migrate (GraphState0 a b c d e f g h i j k l m n o p q r s t) =
     GraphState a b c d e f g h i j k l m n o p q r s t M.empty M.empty
 
-
+-- Lens boilerplate.
 makeLenses ''Entity
 makeLenses ''Link
 makeLenses ''Comment
@@ -451,6 +474,7 @@ makeLenses ''User
 makeLenses ''Issue
 makeLenses ''GraphState
 
+-- Initial state.
 initialGraphState =
   GraphState {
     _nextId = 0,
@@ -476,6 +500,8 @@ initialGraphState =
     _issues = M.empty,
     _issuetagged = M.empty
   }
+
+-- Helper function/types for acid-state updates/queries.
 
 type Err = String
 type S a = EitherT Err (State GraphState) a
@@ -889,6 +915,7 @@ addIssue uid issue' =
      addContrib uid $ I iid
      return iid
 
+-- Delete an issue
 delIssue :: Uid -> Iid -> S ()
 delIssue uid iid =
   do missue <- use $ issues . at iid
@@ -899,6 +926,7 @@ delIssue uid iid =
                   (\id -> delIssueTag uid id iid)
      issues %= M.delete iid
 
+-- Tag an Id as being related to a particular issue.
 addIssueTag :: Uid -> Id -> Iid -> S ()
 addIssueTag uid id iid =
   do issues . at iid . traverse . itagged %= (S.insert id)
@@ -906,6 +934,7 @@ addIssueTag uid id iid =
      issuetagged . at id . traverse %= (S.insert iid)
      addContrib uid (I iid)
 
+-- Un-issue-tag an Id.
 delIssueTag :: Uid -> Id -> Iid -> S ()
 delIssueTag uid id iid =
   do issues . at iid . traverse . itagged %= (S.delete id)

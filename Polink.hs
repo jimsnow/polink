@@ -45,22 +45,29 @@ import System.Process (runCommand, system)
 import Data.Time.Clock (getCurrentTime, utctDay, secondsToDiffTime)
 import Text.Blaze.Internal (text)
 import Data.Foldable
+import Control.Concurrent
 
 import PolinkState
 import PolinkAPI
 
+
+-- YESOD-RELATED TYPES AND INSTANCES
+
 type Txt = T.Text
-data InfluenceGraph = InfluenceGraph {httpMgr :: Manager, acid :: AcidState GraphState}
+data InfluenceGraph = InfluenceGraph {httpMgr :: Manager, acid :: AcidState GraphState, fslock :: MVar ()}
 
 type GW = GWidget InfluenceGraph InfluenceGraph ()
 
+-- Things that a given handler can be expected to have access to.  See getConext.
 data Ctx = Ctx {
-  cgs    :: GraphState, -- application state
-  cmuser :: Maybe User, -- current logged in user
-  cmcb   :: Maybe Entity,  -- clipboard
-  cgw    :: GW          -- widget that displays the above
+  cgs     :: GraphState,   -- application state
+  cmuser  :: Maybe User,   -- current logged in user
+  cmcb    :: Maybe Entity, -- clipboard
+  cgw     :: GW,           -- widget that displays the above
+  cfslock :: MVar ()       -- filesystem mutex for svg-rendering path  
 }
 
+-- Necessary instances if we want to use these types in URLs and forms.
 instance PathPiece Lid where
   fromPathPiece pp = fmap Lid (fromPathPiece pp)
   toPathPiece (Lid id) = toPathPiece id
@@ -114,8 +121,8 @@ instance ToMarkup Url where
   toMarkup (Url t) = toMarkup t
 
 -- We support "DELETE" even though there isn't an easy way to invoke that
--- method from a plain html form.  As a workaround, we have an alternate "POST"
--- that just runs the delete handler.
+-- method from a plain html form.  (Browsers only seem to allow GET and POST.)
+-- As a workaround, we have an alternate "POST" that just runs the delete handler.
 
 mkYesod "InfluenceGraph" [parseRoutes|
   /                              HomeR            GET
@@ -174,14 +181,16 @@ mkYesod "InfluenceGraph" [parseRoutes|
 
 instance Yesod InfluenceGraph
   where
-    maximumContentLength _ _ = 2 * 1024 * 1024 -- 2MB
+    maximumContentLength _ _ = 128 * 1024 -- No need for lengthy request bodies.
     approot = if production
               then ApprootStatic "http://polink.org"
               else ApprootStatic "http://localhost:3001"
     defaultLayout = layout
     makeSessionBackend _ =
       do key <- getDefaultKey
-         return $ Just $ clientSessionBackend key (60 * 24 * 14)
+         return $ Just $ clientSessionBackend key (60 * 24 * 14) -- 2 week session timeout.
+
+-- More recent versions of Yesod do this differently...
 --      do backend <- defaultClientSessionBackend (24*60*7) "mykey.aes"
 --         return $ Just backend
 
@@ -193,13 +202,15 @@ instance YesodAuth InfluenceGraph where
   getAuthId    = return . Just . credsIdent
   loginDest _  = HomeR
   logoutDest _ = HomeR
-  authPlugins _ = [authBrowserId]
+  authPlugins _ = [authBrowserId] -- Persona/browserid support.
   authHttpManager = httpMgr
 
 instance RenderMessage InfluenceGraph FormMessage where
   renderMessage _ _ = defaultFormMessage
 
 instance YesodJquery InfluenceGraph
+
+-- MISC UTILITY FUNCTIONS
 
 fromEither (Left e) = error e
 fromEither (Right a) = a
@@ -296,6 +307,8 @@ ifSet param action1 action2 =
        Just arg -> action1 arg
        _ -> action2
 
+-- Check args to see if anything's set that we should act on.
+-- This probably isn't the best way to register likes/agrees/etc...
 handleArgs ig uid mid action =
   do case mid of
        Just id ->
@@ -323,6 +336,22 @@ handleArgs ig uid mid action =
           (\_ -> clearAndReload "clipboard")
           action)
 
+-- Clipboard management.
+-- (The clipboard allows us to create links.)
+-- This could probably be handled entirely in javascript.
+getSetEClipboardR :: Eid -> Handler RepHtmlJson
+getSetEClipboardR eid =
+  do setCookie (def{setCookieName  = "clipboard",
+                    setCookiePath  = Just "/",
+                    setCookieValue = (B8.pack $ show eid)})
+     getEntityR eid
+
+getClearEClipboardR :: Handler RepHtml
+getClearEClipboardR =
+  do deleteCookie "clipboard" "/"
+     layout [whamlet|<p>clipboard cleared|]
+          
+
 -- If the user is authenticated via persona but hasn't created an account yet,
 -- we redirect them to the account creation page.
 -- newAccountRedirect :: Handler ()
@@ -344,11 +373,12 @@ newAccountRedirect =
                    Just _ -> return ()
 
 -- Figure out who we're logged in as and what the current graph state is,
--- return the graphstate, user, and a widget with the appropriate interface
--- to display who the user is
+-- return the graphstate, user, a widget with the appropriate interface
+-- to display who the user is, and lock (used for filesystem access).
 getContext :: Maybe Id -> Handler Ctx
 getContext mid =
   do ig <- getYesod
+     let lock = fslock ig
      gs' <- liftIO $ query (acid ig) GetStateQ
      let gs = fromEither gs'
      maid <- maybeAuthId
@@ -365,13 +395,13 @@ getContext mid =
                                                           <a href="@{HomeR}">Polink</a></center>
                                                             <center><a href=@{AuthR LoginR}>login or register</a>
                                                     <hr>
-                                                  |]
+                                                  |] lock
        Just email ->
          case gs ^. (usersByEmail . at email) of
-           Nothing -> return $ Ctx gs Nothing Nothing [whamlet|<center><a href=@{NewUserR}>create user account</a>|]
+           Nothing -> return $ Ctx gs Nothing Nothing [whamlet|<center><a href=@{NewUserR}>create user account</a>|] lock
            Just uid ->
              case gs ^. (users . at uid) of
-               Nothing -> return $ Ctx gs Nothing Nothing [whamlet|<center>error retrieving user info|]
+               Nothing -> return $ Ctx gs Nothing Nothing [whamlet|<center>error retrieving user info|] lock
                Just user ->
                  handleArgs
                    ig uid mid
@@ -411,8 +441,11 @@ getContext mid =
                                    <center><a href=@{NewPersonR}>add person</a> <a href=@{NewOrgR}>add organization</a>
                                    <center>clipboard: ^{cbw}
                                  <hr>
-                               |]))
+                               |] lock ))
 
+-- Reject access if the current user doesn't have the given permission.
+-- Otherwise, perform the action and return a widget showing the action results.
+-- (However, we pretty much always do a redirect.)
 reqAuth :: T.Text -> Perm -> (Ctx -> User -> Handler GW) -> Handler GW
 reqAuth s p action =
   do ctx <- getContext Nothing
@@ -422,12 +455,14 @@ reqAuth s p action =
          do reqPerm u p
             action ctx u
 
+-- Check if a user's account has a particular permission, bail out if it doesn't.
 reqPerm :: User -> Perm -> Handler ()
 reqPerm u p =
   if permTest (u ^. authority) p
   then return ()
   else permissionDenied "you don't have the proper permissions to do that"
 
+-- Check permission, return bool.
 hasPerm :: Ctx -> Perm -> Bool
 hasPerm ctx p =
   case cmuser ctx of
@@ -437,6 +472,8 @@ hasPerm ctx p =
       then True
       else False
 
+-- Layout instance we use for defaultLayout.
+-- We call this directly, though, for the frivolous reason that it's less typing.
 layout :: GWidget s InfluenceGraph () -> GHandler s InfluenceGraph RepHtml
 layout w =
   do newAccountRedirect
@@ -481,14 +518,20 @@ function hideid(id) {
              <script src="http://polink.org/static/polink.js"></script>
        |]
 
+-- Bail out with a given text string.
 err :: T.Text -> Handler RepHtml
 err s = layout [whamlet|<p>#{s}|]
 
+-- Same, but as a widget.
 errW :: T.Text -> GWidget a b ()
 errW s = [whamlet|<p>#{s}|]
 
+-- Pagination.
+-- Max number of entities we show at once.
 perpage = 100
 
+-- Given a Sequence of things, look at the get parameters to see which ones
+-- we need to actually show, return those along with a navigation widget.
 paginate :: SEQ.Seq a -> Handler (GW, SEQ.Seq a)
 paginate xs =
   do pagenumt <- lookupGetParam "page"
@@ -523,7 +566,8 @@ paginate xs =
             then xs
             else SEQ.take perpage $ SEQ.drop ((pagenum-1)*perpage) xs)
 
--- relatively lazy way to check length
+-- Relatively lazy way to check length.  This avoids scanning the whole list,
+-- which could be huge.
 atLeastLength :: [a] -> Int -> Int
 atLeastLength xs max = go xs max 0
   where
@@ -531,6 +575,7 @@ atLeastLength xs max = go xs max 0
     go [] max acc = acc
     go (x:xs) max acc = go xs (max-1) (acc+1) 
 
+-- Same as paginate, but for lists.
 paginateL :: [a] -> Handler (GW, [a])
 paginateL xs =
   do pagenumt <- lookupGetParam "page"
@@ -569,6 +614,8 @@ paginateL xs =
                 \ nothing here
         |], if all then xs else xs'')
        
+-- Helper functions to render objects identified by various kinds of ID.
+-- Return as a widget.
 
 renderEid gs eid@(Eid id) =
   case (gs ^. entities ^. at eid) of
@@ -679,6 +726,7 @@ renderId gs id =
     OT otid -> renderOTid gs otid
     I iid -> renderIid gs iid
 
+-- For a given Id, return the users that agree/disagree/like/dislike.
 votesById :: GraphState -> Id -> Maybe (S.Set Uid, S.Set Uid, S.Set Uid, S.Set Uid)
 votesById gs id =
   do a  <- gs ^. agree ^. at id
@@ -687,7 +735,7 @@ votesById gs id =
      dl <- gs ^. dislike ^. at id
      return (a, da, l, dl)
 
-
+-- Show the agree/disagree/like/dislike votes, along with vote buttons, for a given Id.
 renderVotes :: GraphState -> Maybe User -> Id -> Route InfluenceGraph -> GW
 renderVotes gs muser id cr  =
   case votesById gs id of
@@ -753,6 +801,11 @@ renderVotesUser gs muser id cr  =
           ^{w "disliked by" dislikes  "dislike"  "add as foe"}
         |]
 
+
+-- FRONT / INFORMATIONAL HANDLERS
+
+-- Recent changes was getting cluttered by issue tags, so we use this to group
+-- clusters of changes that are all about one thing.
 mergedups :: Eq a => [a] -> [(a, Int)]
 mergedups [] = []
 mergedups (x:xs) = go (xs) x 1
@@ -763,7 +816,7 @@ mergedups (x:xs) = go (xs) x 1
       then go xs last (count+1)
       else (last, count) : go xs x 1 
 
-
+-- Show what's happened recently.
 recentChanges :: GraphState -> SEQ.Seq Id -> Handler GW
 recentChanges gs allids =
   do (pw,ids) <- paginate allids
@@ -779,7 +832,10 @@ recentChanges gs allids =
          ^{pw}
        |]
 
+getRecentR :: Handler RepHtml
+getRecentR = getHomeR
 
+-- Front page.
 getHomeR :: Handler RepHtml
 getHomeR =
   do ctx <- getContext Nothing
@@ -810,6 +866,8 @@ getHomeR =
             <p><b>Recent Changes</b>
             ^{changes}
           |]
+
+-- USER MANAGEMENT
 
 minLen :: T.Text -> Int -> T.Text -> Either T.Text T.Text
 minLen e min t
@@ -899,6 +957,115 @@ postNewUserR =
                         redirect $ UserR uname
                 else err "you must agree to the terms"
               _ -> err "invalid input"
+
+getUsersR :: Handler RepHtml
+getUsersR =
+  do ctx <- getContext Nothing
+     let gs = cgs ctx
+     let us = M.toList (gs ^. users)
+     (pw, us') <- paginateL us
+     layout
+       [whamlet|
+         ^{cgw ctx}
+         ^{pw}
+         $forall u <- us'
+           $with uname <- _name $ snd u
+             <p><a href="@{UserR uname}">#{uname}</a>
+         ^{pw}
+       |]
+
+getUserR :: Txt -> Handler RepHtml
+getUserR name =
+  do -- We need to resolve the username to an id we can hand into getContext.
+     -- This isn't ideal, since we should ideally never query the state twice.
+     -- If we race, it shouldn't be a big deal.
+     ig <- getYesod
+     egs <- liftIO $ query (acid ig) GetStateQ
+     let muid =
+           case egs of
+             Left _ -> Nothing
+             Right gs -> gs ^. usersByName ^. at name
+     case muid of
+       Nothing -> err "no such user"
+       Just uid -> getUserIDR uid
+
+data UserRole = AdminRole | EditorRole | NormalRole | CommentOnlyRole | RestrictedRole
+ deriving (Eq, Ord, Show)
+
+roleToPerm AdminRole       = adminPerm
+roleToPerm EditorRole      = editorPerm
+roleToPerm NormalRole      = defaultPerm
+roleToPerm CommentOnlyRole = commentOnlyPerm
+roleToPerm RestrictedRole  = limitedPerm
+
+userPermForm =
+  renderDivs $
+    id <$> areq (selectFieldList roles) "role" (Just NormalRole)
+  where
+    roles :: [(T.Text, UserRole)]
+    roles =
+      [("admin",        AdminRole),
+       ("editor",       EditorRole),
+       ("normal",       NormalRole),
+       ("comment only", CommentOnlyRole),
+       ("restricted",   RestrictedRole)]
+
+
+getUserIDR :: Uid -> Handler RepHtml
+getUserIDR uid =
+  do ctx <- getContext $ Just $ U uid
+     let gs = cgs ctx
+     let mu = gs ^. users ^. at uid
+     case mu of
+       Nothing -> err "no such user"
+       Just u ->
+         do contrib <- recentChanges gs (_contrib u)
+            (fw, enctype) <- generateFormPost userPermForm
+            layout $
+              do setTitle $ text $ u ^. name
+                 [whamlet|
+                   ^{cgw ctx}
+                   <h1>user #{_name u}
+                   <hr>
+                   <h2>account permissions
+                   $if hasPerm ctx Admin
+                      <form method=post action=@{UserIDR uid} enctype=#{enctype}>
+                        ^{fw}
+                        <input type=submit value="change user role">
+                   <p>#{showPerms (_authority u)}
+                   <hr>
+                   ^{renderVotesUser gs (cmuser ctx) (U $ _uid u) (UserR (_name u))}
+                   <hr>
+                   <h2>Contributions:
+                   ^{contrib}
+                 |]
+
+
+postUserIDR :: Uid -> Handler RepHtml
+postUserIDR uid =
+  do w <-
+       reqAuth
+         "modify user permissions"
+         Admin
+         (\ctx user ->
+           do let gs = cgs ctx
+                  mu = gs ^. users ^. at uid
+              case mu of
+                Nothing -> return $ errW "could not find that user"
+                Just u ->
+                  do ((result, widget), enctype) <- runFormPost userPermForm
+                     case result of
+                       FormSuccess role ->
+                         do let p = roleToPerm role
+                            ig <- getYesod
+                            liftIO $ update (acid ig) (SetUserPermU uid p)
+                            redirect $ UserR (_name u)
+                       _ -> return $ errW "invalid input")
+     layout [whamlet|^{w}|]
+
+
+
+-- SITE HELP/DOCUMENTATION
 
 getAboutR :: Handler RepHtml
 getAboutR = 
@@ -1188,113 +1355,7 @@ getRSHelpR =
             affect anything in the system.
        |]
 
-getRecentR :: Handler RepHtml
-getRecentR = getHomeR
-
-getUsersR :: Handler RepHtml
-getUsersR =
-  do ctx <- getContext Nothing
-     let gs = cgs ctx
-     let us = M.toList (gs ^. users)
-     (pw, us') <- paginateL us
-     layout
-       [whamlet|
-         ^{cgw ctx}
-         ^{pw}
-         $forall u <- us'
-           $with uname <- _name $ snd u
-             <p><a href="@{UserR uname}">#{uname}</a>
-         ^{pw}
-       |]
-
-getUserR :: Txt -> Handler RepHtml
-getUserR name =
-  do -- We need to resolve the username to an id we can hand into getContext.
-     -- This isn't ideal, since we should ideally never query the state twice.
-     -- If we race, it shouldn't be a big deal.
-     ig <- getYesod
-     egs <- liftIO $ query (acid ig) GetStateQ
-     let muid =
-           case egs of
-             Left _ -> Nothing
-             Right gs -> gs ^. usersByName ^. at name
-     case muid of
-       Nothing -> err "no such user"
-       Just uid -> getUserIDR uid
-
-data UserRole = AdminRole | EditorRole | NormalRole | CommentOnlyRole | RestrictedRole
- deriving (Eq, Ord, Show)
-
-roleToPerm AdminRole       = adminPerm
-roleToPerm EditorRole      = editorPerm
-roleToPerm NormalRole      = defaultPerm
-roleToPerm CommentOnlyRole = commentOnlyPerm
-roleToPerm RestrictedRole  = limitedPerm
-
-userPermForm =
-  renderDivs $
-    id <$> areq (selectFieldList roles) "role" (Just NormalRole)
-  where
-    roles :: [(T.Text, UserRole)]
-    roles =
-      [("admin",        AdminRole),
-       ("editor",       EditorRole),
-       ("normal",       NormalRole),
-       ("comment only", CommentOnlyRole),
-       ("restricted",   RestrictedRole)]
-
-
-getUserIDR :: Uid -> Handler RepHtml
-getUserIDR uid =
-  do ctx <- getContext $ Just $ U uid
-     let gs = cgs ctx
-     let mu = gs ^. users ^. at uid
-     case mu of
-       Nothing -> err "no such user"
-       Just u ->
-         do contrib <- recentChanges gs (_contrib u)
-            (fw, enctype) <- generateFormPost userPermForm
-            layout $
-              do setTitle $ text $ u ^. name
-                 [whamlet|
-                   ^{cgw ctx}
-                   <h1>user #{_name u}
-                   <hr>
-                   <h2>account permissions
-                   $if hasPerm ctx Admin
-                      <form method=post action=@{UserIDR uid} enctype=#{enctype}>
-                        ^{fw}
-                        <input type=submit value="change user role">
-                   <p>#{showPerms (_authority u)}
-                   <hr>
-                   ^{renderVotesUser gs (cmuser ctx) (U $ _uid u) (UserR (_name u))}
-                   <hr>
-                   <h2>Contributions:
-                   ^{contrib}
-                 |]
-
-
-postUserIDR :: Uid -> Handler RepHtml
-postUserIDR uid =
-  do w <-
-       reqAuth
-         "modify user permissions"
-         Admin
-         (\ctx user ->
-           do let gs = cgs ctx
-                  mu = gs ^. users ^. at uid
-              case mu of
-                Nothing -> return $ errW "could not find that user"
-                Just u ->
-                  do ((result, widget), enctype) <- runFormPost userPermForm
-                     case result of
-                       FormSuccess role ->
-                         do let p = roleToPerm role
-                            ig <- getYesod
-                            liftIO $ update (acid ig) (SetUserPermU uid p)
-                            redirect $ UserR (_name u)
-                       _ -> return $ errW "invalid input")
-     layout [whamlet|^{w}|]
+-- ENTITY MANAGEMENT
 
 getEntitiesR :: Handler RepHtml
 getEntitiesR =
@@ -1492,6 +1553,7 @@ getEntityR' eid =
           Just ent -> (cgs ctx, ent)
           Nothing -> error "not found")         
 
+-- Clean up text so it looks good in a URL
 urlifier :: T.Text -> T.Text
 urlifier s =
   T.map f s
@@ -1499,6 +1561,10 @@ urlifier s =
     f ' ' = '-'
     f c = C.toLower c
 
+-- We like to have the entity name appear in the url rather than just a number,
+-- so we do an automatic redirect if we use the simplified url that doesn't
+-- have the name.  (The name passed to the final handler gets ignored -- it's
+-- just there for looks.)
 getEntityR :: Eid -> Handler RepHtmlJson
 getEntityR eid = 
   do ig <- getYesod
@@ -1508,13 +1574,18 @@ getEntityR eid =
        Nothing -> getEntityR' eid
        Just e -> redirect (EntityCanonR eid (urlifier $ e ^. ecname))
 
-
+-- If you supply a name, we ignore it and go straight to the regulary entity
+-- handler.
 getEntityCanonR :: Eid -> T.Text -> Handler RepHtmlJson
 getEntityCanonR eid name = getEntityR' eid
 
 deleteEntityCanonR :: Eid -> T.Text -> Handler RepHtml
 deleteEntityCanonR eid name = deleteEntityR eid
 
+-- Helper function for writing delete handlers.
+-- Given a permission, a string describing that action, an action, and a
+-- type-safe url, we check that the user has the permission to do the action.
+-- If it works, we redirect to the type-safe url.
 deleteThing auth string action redir =
   do w <-
        reqAuth
@@ -1535,18 +1606,7 @@ deleteEntityR eid =
 
 postDelEntityR = deleteEntityR
 
-getSetEClipboardR :: Eid -> Handler RepHtmlJson
-getSetEClipboardR eid =
-  do setCookie (def{setCookieName  = "clipboard",
-                    setCookiePath  = Just "/",
-                    setCookieValue = (B8.pack $ show eid)})
-     getEntityR eid
 
-getClearEClipboardR :: Handler RepHtml
-getClearEClipboardR =
-  do deleteCookie "clipboard" "/"
-     layout [whamlet|<p>clipboard cleared|]
-          
 
 addBool :: Maybe a -> Maybe (a, Bool)
 addBool m = fmap (\x -> (x, False)) m
@@ -1701,12 +1761,13 @@ postEditPersonR eid = postNewPersonR' (Just eid)
 postEditOrgR eid = postNewOrgR' (Just eid)
 
 
+-- LINK MANAGEMENT
 
 pgeneric_lt :: [PosLinkType]
-pgeneric_lt = [Agree, Endorse, Praise, Contribute, Trust, Assist, DoFavor, MakeDeal, AsksForHelp, Appologize, Forgive, Defend, Protect]
+pgeneric_lt = [Agree, Endorse, Praise, Contribute, Trust, Assist, DoFavor, MakeDeal, AsksForHelp, Appologize, Forgive, Defend, Protect, Manage]
 
 ngeneric_lt :: [NegLinkType]
-ngeneric_lt = [Disagree, Criticize, Discredit, Distrust, Accuse, Condemn, Insult, Sue, Oppose, Hinder, Threaten, EndsRelationship, DeclinesToHelp, Ridicule]
+ngeneric_lt = [Disagree, Criticize, Discredit, Distrust, Accuse, Condemn, Insult, Sue, Oppose, Hinder, Threaten, EndsRelationship, DeclinesToHelp, Ridicule, Attack]
 
 pp_lt = ([Marry, ParentOf, Nominate, Appoint, WorksFor, ContractsFor], [Divorce, Breakup, Fire, Assault, Kill])
 po_lt = ([Member, Invest, Retire, WorksFor, ContractsFor, HoldsOffice], [Resign, Divest])
@@ -1975,6 +2036,12 @@ deleteLinkR lid =
 
 postDelLinkR = deleteLinkR
 
+getLinksBetweenR :: Eid -> Eid -> Handler RepHtml
+getLinksBetweenR = undefined
+
+
+-- TAG MANAGEMENT
+
 renderTags :: GraphState -> User -> Eid -> GW
 renderTags gs u eid =
   case gs ^. entities . at eid of
@@ -2194,7 +2261,11 @@ postNewTagR eid =
 
      layout [whamlet|^{w}|]
 
+-- COMMENT MANAGEMENT
+
 {-
+-- We should be able to make this a top-level function, but I wasn't able to
+-- satisfy the typechecker...
 commentField :: T.Text -> Field (Handler Int) Textarea Textarea
 commentField s = check lencheck textareaField
  where
@@ -2362,9 +2433,8 @@ postNewCommentR =
 
      layout [whamlet|^{w}|]
 
-getLinksBetweenR :: Eid -> Eid -> Handler RepHtml
-getLinksBetweenR = undefined
 
+-- ISSUE MANAGEMENT
 
 getIssuesR :: Handler RepHtml
 getIssuesR =
@@ -2399,32 +2469,33 @@ getIssueR iid =
        Just issue ->
          do (pw, ids) <- paginateL (S.toList $ issue ^. itagged)
             layout $
-              [whamlet|
-                ^{cgw ctx}
-                <center>
-                  <h1>#{_iname issue}
-                  $maybe desc <- _idesc issue
-                    <h2>#{desc}
-                  <p>
-                    $maybe wp <- _iwp issue
-                      <a href="http://en.wikipedia.org/wiki/#{wp}">wikipedia</a>
+              do setTitle $ text $ issue ^. iname
+                 [whamlet|
+                   ^{cgw ctx}
+                   <center>
+                     <h1>#{_iname issue}
+                     $maybe desc <- _idesc issue
+                       <h2>#{desc}
+                     <p>
+                       $maybe wp <- _iwp issue
+                         <a href="http://en.wikipedia.org/wiki/#{wp}">wikipedia</a>
 
-                <hr>
-                  <center>
-                    <object data=@{IssueSvgR iid} type="image/svg+xml"></object>
-                <hr>
-                <ul>
-                  ^{pw}
-                  $forall id <- ids
-                    <li>^{renderId gs id}
-                    $if (hasPerm ctx DelIssueTag)
-                      $case id
-                        $of L lid
-                          <form method="post" action="@{DelIssueTagR lid iid}">
-                            <input type="submit" value="remove from issue" />
+                   <hr>
+                     <center>
+                       <object data=@{IssueSvgR iid} class="issuegraph" type="image/svg+xml"></object>
+                   <hr>
+                   <ul>
+                     ^{pw}
+                     $forall id <- ids
+                       <li>^{renderId gs id}
+                       $if (hasPerm ctx DelIssueTag)
+                         $case id
+                           $of L lid
+                             <form method="post" action="@{DelIssueTagR lid iid}">
+                               <input type="submit" value="remove from issue" />
 
-                  ^{pw}
-              |]
+                     ^{pw}
+                 |]
 
 newIssueForm missue =
   renderDivs $
@@ -2531,6 +2602,8 @@ postDelIssueTagR lid iid =
   deleteThing DelIssueTag "delete issue tag" (\user -> DelIssueTagU (user ^. uid) (L lid) iid) (IssueR iid)
 
 
+-- MISC HANDLERS
+
 getWikiR :: Txt -> Handler RepHtml
 getWikiR wiki =
   do ctx <- getContext Nothing
@@ -2601,41 +2674,48 @@ getIssueDotR iid =
   do ctx <- getContext (Just $ I iid)
      return $ RepPlain $ toContent $ issuegv (cgs ctx) iid
 
+
+-- Write dot output to a file, run graphviz on that file to generate svg,
+-- then send the result back to the client.  The lock keeps concurrent threads
+-- from clobbering the file.
+-- Todo: check if the svg file is recent; if so, don't render it again.
+-- Todo: We should hold the lock while doing the sendFile, but unfortunately
+--       that seems to short-circuit the rest of the handler, so we can't drop
+--       the lock later...  Not sure what the right solution is here.
+renderSvg :: MVar () -> FilePath -> String -> Handler a
+renderSvg lock path dot =
+  let dotfile = path ++ ".dot"
+      svgfile = path ++ ".svg"
+  in
+    do l <- liftIO $ takeMVar lock
+       liftIO $ writeFile dotfile dot
+       _ <- liftIO $ system $ "dot -Tsvg " ++ dotfile ++ " >" ++ svgfile
+       liftIO $ putMVar lock l
+       sendFile "image/svg+xml" svgfile
+       
+
+-- Get svg rendering of the graph of links associated with an issue.
 getIssueSvgR :: Iid -> Handler RepPlain
 getIssueSvgR iid@(Iid id) =
   do ctx <- getContext (Just $ I iid)
      let dot = issuegv (cgs ctx) iid
-     let dotfile = "./nginx/static/issues/" ++ (show id) ++ ".dot"
-     let svgfile = "./nginx/static/issues/" ++ (show id) ++ ".svg"
-     liftIO $ writeFile dotfile dot
-     _ <- liftIO $ system $ "dot -Tsvg " ++ dotfile ++ " >" ++ svgfile
-     sendFile "image/svg+xml" svgfile
+     renderSvg (cfslock ctx) ("./nginx/static/issues/" ++ (show id)) dot
 
--- Dump graphviz source for the org chart to a file, then run graphviz to
--- generate svg, return that to the client.  We ought to be doing this with
--- a lock held, and we should be checking the file age, only regenerating it if
--- it's actually stale.
+-- Get svg rendering of an organization's org chart.
 getOrgChartSvgR :: Eid -> Handler RepHtml
 getOrgChartSvgR eid@(Eid id) =
   do ctx <- getContext (Just $ E eid)
      utc <- liftIO $ getCurrentTime
      let now = utctDay utc
      let dot = orgchartgv (cgs ctx) eid (dayrange now)
-     let dotfile = "./nginx/static/orgcharts/org-" ++ (show id) ++ ".dot"
-     let svgfile = "./nginx/static/orgcharts/org-" ++ (show id) ++ ".svg"
-     liftIO $ writeFile dotfile dot
-     _ <- liftIO $ system $ "dot -Tsvg " ++ dotfile ++ " >" ++ svgfile
-     sendFile "image/svg+xml" svgfile
+     renderSvg (cfslock ctx) ("./nginx/static/orgcharts/org-" ++ (show id)) dot
 
+-- Same as above, but specific to a date.
 getOrgChartSvgDateR :: Eid -> Int -> Handler RepHtml
 getOrgChartSvgDateR eid@(Eid id) date =
   do ctx <- getContext (Just $ E eid)
      let dot = orgchartgv (cgs ctx) eid (dayrange $ intToDay date)
-     let dotfile = "./nginx/static/orgcharts/org-" ++ (show id) ++ ".dot"
-     let svgfile = "./nginx/static/orgcharts/org-" ++ (show id) ++ ".svg"
-     liftIO $ writeFile dotfile dot
-     _ <- liftIO $ system $ "dot -Tsvg " ++ dotfile ++ " >" ++ svgfile
-     sendFile "image/svg+xml" svgfile
+     renderSvg (cfslock ctx) ("./nginx/static/orgcharts/org-" ++ (show id)) dot
 
 getOrgChartR :: Eid -> Handler RepHtml
 getOrgChartR eid =
@@ -2644,7 +2724,7 @@ getOrgChartR eid =
        [whamlet|
          ^{cgw ctx}
          <center>
-           <object data=@{OrgChartSvgR eid} type="image/svg+xml"></object>
+           <object data=@{OrgChartSvgR eid} class="orgchart" type="image/svg+xml"></object>
        |]
 
 getOrgChartDateR :: Eid -> Int -> Handler RepHtml
@@ -2657,10 +2737,13 @@ getOrgChartDateR eid date =
            <object data=@{OrgChartSvgDateR eid date} type="image/svg+xml"></object>
        |] 
 
+-- Dump the entire graph of links in a simplified format understood by Pariah.
 getRSStateR :: Handler RepJson
 getRSStateR =
   do ctx <- getContext Nothing
      jsonToRepJson (cgs ctx)
+
+-- MAIN
 
 main :: IO ()
 main =
@@ -2669,4 +2752,5 @@ main =
     (createCheckpointAndClose)
     (\acid ->
        do mgr <- newManager def
-          warpDebug 3001 $ InfluenceGraph mgr acid)
+          lock <- newMVar ()
+          warpDebug 3001 $ InfluenceGraph mgr acid lock)
