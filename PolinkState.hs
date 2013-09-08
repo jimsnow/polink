@@ -915,6 +915,13 @@ addIssue uid issue' =
      addContrib uid $ I iid
      return iid
 
+editIssue :: Uid -> Issue -> S Iid
+editIssue uid issue =
+  do let iid = _iid issue
+     issues . at (iid) . traverse %= (\old -> issue { _itagged = old ^. itagged })
+     addContrib uid (I iid)
+     return iid
+
 -- Delete an issue
 delIssue :: Uid -> Iid -> S ()
 delIssue uid iid =
@@ -941,11 +948,12 @@ delIssueTag uid id iid =
      issuetagged . at id . traverse %= (S.delete iid)
 
 addIssueU u i = toU $ addIssue u i
+editIssueU u i = toU $ editIssue u i
 delIssueU u iid = toU $ delIssue u iid
 addIssueTagU u id iid = toU $ addIssueTag u id iid
 delIssueTagU u id iid = toU $ delIssueTag u id iid
 
 -- Invoke acid-state boilerplate to generate queries and updates.
-$(makeAcidic ''GraphState ['getStateQ, 'bumpIdU, 'getUserQ, 'getUserByNameQ, 'getUserByEmailQ, 'addUserU, 'setUserPermU, 'addCommentU, 'delCommentU, 'removeCommentU, 'addAgreeU, 'addDisagreeU, 'addLikeU, 'addDislikeU, 'addEntityU, 'editEntityU, 'delEntityU, 'addLinkU, 'editLinkU, 'delLinkU, 'addTagU, 'delPTagU, 'delOTagU, 'addIssueU, 'delIssueU, 'addIssueTagU, 'delIssueTagU])
+$(makeAcidic ''GraphState ['getStateQ, 'bumpIdU, 'getUserQ, 'getUserByNameQ, 'getUserByEmailQ, 'addUserU, 'setUserPermU, 'addCommentU, 'delCommentU, 'removeCommentU, 'addAgreeU, 'addDisagreeU, 'addLikeU, 'addDislikeU, 'addEntityU, 'editEntityU, 'delEntityU, 'addLinkU, 'editLinkU, 'delLinkU, 'addTagU, 'delPTagU, 'delOTagU, 'addIssueU, 'editIssueU, 'delIssueU, 'addIssueTagU, 'delIssueTagU])
 
 

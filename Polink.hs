@@ -56,7 +56,8 @@ import PolinkAPI
 type Txt = T.Text
 data InfluenceGraph = InfluenceGraph {httpMgr :: Manager, acid :: AcidState GraphState, fslock :: MVar ()}
 
-type GW = GWidget InfluenceGraph InfluenceGraph ()
+--type GW = GWidget InfluenceGraph InfluenceGraph ()
+type GW = WidgetT InfluenceGraph IO ()
 
 -- Things that a given handler can be expected to have access to.  See getConext.
 data Ctx = Ctx {
@@ -168,10 +169,12 @@ mkYesod "InfluenceGraph" [parseRoutes|
   /ut/#UTid                      UTagR            GET
   /el/#Eid/#Eid                  LinksBetweenR    GET
   /i/#Iid                        IssueR           GET
+  /i/#Iid/n/#Txt                 IssueCanonR      GET
   /i/#Iid/dot                    IssueDotR        GET
   /i/#Iid/svg                    IssueSvgR        GET
   /i                             IssuesR          GET
   /newissue                      NewIssueR        GET POST
+  /editissue/#Iid                EditIssueR       GET POST
   /l/#Lid/newissuetag            NewIssueTagR     POST
   /deli/#Iid                     DelIssueR        POST
   /delit/#Lid/#Iid               DelIssueTagR     POST
@@ -181,14 +184,14 @@ mkYesod "InfluenceGraph" [parseRoutes|
 
 instance Yesod InfluenceGraph
   where
-    maximumContentLength _ _ = 128 * 1024 -- No need for lengthy request bodies.
+    maximumContentLength _ _ = Just (128 * 1024) -- No need for lengthy request bodies.
     approot = if production
               then ApprootStatic "http://polink.org"
               else ApprootStatic "http://localhost:3001"
     defaultLayout = layout
-    makeSessionBackend _ =
-      do key <- getDefaultKey
-         return $ Just $ clientSessionBackend key (60 * 24 * 14) -- 2 week session timeout.
+--    makeSessionBackend _ =
+--      do key <- getDefaultKey
+--         return $ Just $ clientSessionBackend key (60 * 24 * 14) -- 2 week session timeout.
 
 -- More recent versions of Yesod do this differently...
 --      do backend <- defaultClientSessionBackend (24*60*7) "mykey.aes"
@@ -202,8 +205,14 @@ instance YesodAuth InfluenceGraph where
   getAuthId    = return . Just . credsIdent
   loginDest _  = HomeR
   logoutDest _ = HomeR
-  authPlugins _ = [authBrowserId] -- Persona/browserid support.
+  authPlugins _ = [authBrowserId def] -- Persona/browserid support.
   authHttpManager = httpMgr
+  maybeAuthId = do
+    ms <- lookupSession "_ID"
+    case ms of
+        Nothing -> return Nothing
+        Just s -> return $ fromPathPiece s
+
 
 instance RenderMessage InfluenceGraph FormMessage where
   renderMessage _ _ = defaultFormMessage
@@ -339,14 +348,14 @@ handleArgs ig uid mid action =
 -- Clipboard management.
 -- (The clipboard allows us to create links.)
 -- This could probably be handled entirely in javascript.
-getSetEClipboardR :: Eid -> Handler RepHtmlJson
+getSetEClipboardR :: Eid -> Handler TypedContent
 getSetEClipboardR eid =
   do setCookie (def{setCookieName  = "clipboard",
                     setCookiePath  = Just "/",
                     setCookieValue = (B8.pack $ show eid)})
      getEntityR eid
 
-getClearEClipboardR :: Handler RepHtml
+getClearEClipboardR :: Handler Html
 getClearEClipboardR =
   do deleteCookie "clipboard" "/"
      layout [whamlet|<p>clipboard cleared|]
@@ -357,8 +366,9 @@ getClearEClipboardR =
 -- newAccountRedirect :: Handler ()
 newAccountRedirect =
   do cr <- getCurrentRoute
-     rtom <- getRouteToMaster
-     if ((fmap rtom cr) == (Just NewUserR)) -- break inevitable redirect loop
+     --rtom <- getRouteToMaster
+     --if ((fmap rtom cr) == (Just NewUserR)) -- break inevitable redirect loop
+     if cr == Just (NewUserR)
      then return ()
      else
        do maid <- maybeAuthId
@@ -371,6 +381,7 @@ newAccountRedirect =
                  case gs ^. usersByEmail . at email of
                    Nothing -> redirect NewUserR
                    Just _ -> return ()
+
 
 -- Figure out who we're logged in as and what the current graph state is,
 -- return the graphstate, user, a widget with the appropriate interface
@@ -474,10 +485,11 @@ hasPerm ctx p =
 
 -- Layout instance we use for defaultLayout.
 -- We call this directly, though, for the frivolous reason that it's less typing.
-layout :: GWidget s InfluenceGraph () -> GHandler s InfluenceGraph RepHtml
+--layout :: GWidget s InfluenceGraph () -> GHandler s InfluenceGraph RepHtml
+layout :: GW -> Handler Html
 layout w =
   do newAccountRedirect
-     setHeader "Access-Control-Allow-Origin" "*"
+     addHeader "Access-Control-Allow-Origin" "*"
      content <- widgetToPageContent
                   (do w
                       toWidget [lucius| |]
@@ -496,7 +508,7 @@ function hideid(id) {
 }
 
                       |])
-     hamletToRepHtml
+     giveUrlRenderer
        [hamlet|
          $doctype 5
          <html>
@@ -519,11 +531,11 @@ function hideid(id) {
        |]
 
 -- Bail out with a given text string.
-err :: T.Text -> Handler RepHtml
+err :: T.Text -> Handler Html
 err s = layout [whamlet|<p>#{s}|]
 
 -- Same, but as a widget.
-errW :: T.Text -> GWidget a b ()
+errW :: T.Text -> GW
 errW s = [whamlet|<p>#{s}|]
 
 -- Pagination.
@@ -832,11 +844,11 @@ recentChanges gs allids =
          ^{pw}
        |]
 
-getRecentR :: Handler RepHtml
+getRecentR :: Handler Html
 getRecentR = getHomeR
 
 -- Front page.
-getHomeR :: Handler RepHtml
+getHomeR :: Handler Html
 getHomeR =
   do ctx <- getContext Nothing
      let gs = cgs ctx
@@ -894,7 +906,7 @@ newUserForm =
    userField = check (bracketLen "username must be between 4 and 64 characters" 4 64) textField
    trueField = checkBool (id) ("you must agree to the site policy"::T.Text) checkBoxField
 
-getNewUserR :: Handler RepHtml
+getNewUserR :: Handler Html
 getNewUserR =
   do maid <- maybeAuthId
      (widget, enctype) <- generateFormPost newUserForm
@@ -941,7 +953,7 @@ getNewUserR =
            <p>Something went wrong with browserId authentication.
        |]
 
-postNewUserR :: Handler RepHtml
+postNewUserR :: Handler Html
 postNewUserR =
   do ig   <- getYesod
      let as = acid ig
@@ -958,7 +970,7 @@ postNewUserR =
                 else err "you must agree to the terms"
               _ -> err "invalid input"
 
-getUsersR :: Handler RepHtml
+getUsersR :: Handler Html
 getUsersR =
   do ctx <- getContext Nothing
      let gs = cgs ctx
@@ -974,7 +986,7 @@ getUsersR =
          ^{pw}
        |]
 
-getUserR :: Txt -> Handler RepHtml
+getUserR :: Txt -> Handler Html
 getUserR name =
   do -- We need to resolve the username to an id we can hand into getContext.
      -- This isn't ideal, since we should ideally never query the state twice.
@@ -1011,7 +1023,7 @@ userPermForm =
        ("restricted",   RestrictedRole)]
 
 
-getUserIDR :: Uid -> Handler RepHtml
+getUserIDR :: Uid -> Handler Html
 getUserIDR uid =
   do ctx <- getContext $ Just $ U uid
      let gs = cgs ctx
@@ -1041,7 +1053,7 @@ getUserIDR uid =
                  |]
 
 
-postUserIDR :: Uid -> Handler RepHtml
+postUserIDR :: Uid -> Handler Html
 postUserIDR uid =
   do w <-
        reqAuth
@@ -1067,7 +1079,7 @@ postUserIDR uid =
 
 -- SITE HELP/DOCUMENTATION
 
-getAboutR :: Handler RepHtml
+getAboutR :: Handler Html
 getAboutR = 
   do ctx <- getContext Nothing
      layout
@@ -1242,7 +1254,7 @@ getAboutR =
             Github <a href="https://github.com/jimsnow/polink">here</a>.
        |]
 
-getRSHelpR :: Handler RepHtml
+getRSHelpR :: Handler Html
 getRSHelpR = 
   do ctx <- getContext Nothing
      layout
@@ -1357,7 +1369,7 @@ getRSHelpR =
 
 -- ENTITY MANAGEMENT
 
-getEntitiesR :: Handler RepHtml
+getEntitiesR :: Handler Html
 getEntitiesR =
   do ctx <- getContext Nothing
      let gs = cgs ctx
@@ -1372,7 +1384,7 @@ getEntitiesR =
          ^{pw}
        |]
 
-getEntityByNameR :: Txt -> Handler RepHtml
+getEntityByNameR :: Txt -> Handler Html
 getEntityByNameR = undefined
 
 renderLink :: GraphState -> Lid -> (GW, Maybe Link)
@@ -1468,7 +1480,7 @@ isPerson eid ctx =
         Person _ -> Just True
         Organization _ -> Just False
 
-getEntityR' :: Eid -> Handler RepHtmlJson
+getEntityR' :: Eid -> Handler TypedContent
 getEntityR' eid = 
   do ctx <- getContext $ Just $ E eid
      let gs = cgs ctx
@@ -1487,71 +1499,74 @@ getEntityR' eid =
               if eid == (_eid cbe)
               then return [lf1]
               else return [lf1, lf2]
-     defaultLayoutJson
-       (do case mentity of
-             Nothing -> return ()
-             Just ent -> setTitle $ text $ ent ^. ecname
-           [whamlet|
-             ^{cgw ctx}
-             ^{entitywidget}
+     selectRep $ do
+       provideRep $
+         layout 
+           (do case mentity of
+                 Nothing -> return ()
+                 Just ent -> setTitle $ text $ ent ^. ecname
+               [whamlet|
+                 ^{cgw ctx}
+                 ^{entitywidget}
  
-             $if (hasPerm ctx EditEntity)
-               $maybe isP <- isPerson eid ctx
-                 $if isP
-                   <form method="get" action="@{EditPersonR eid}">
-                     <input type="submit" value="edit" />
-                 $else
-                   <form method="get" action="@{EditOrgR eid}">
-                     <input type="submit" value="edit" />
+                 $if (hasPerm ctx EditEntity)
+                   $maybe isP <- isPerson eid ctx
+                     $if isP
+                       <form method="get" action="@{EditPersonR eid}">
+                         <input type="submit" value="edit" />
+                     $else
+                       <form method="get" action="@{EditOrgR eid}">
+                         <input type="submit" value="edit" />
 
-             $if (hasPerm ctx DelEntity)
-               <form method="post" action="@{DelEntityR eid}">
-                 <input type="submit" value="delete" />
+                 $if (hasPerm ctx DelEntity)
+                   <form method="post" action="@{DelEntityR eid}">
+                     <input type="submit" value="delete" />
 
-             <hr>
-
-             $maybe e <- mentity
-               $maybe cb <- cmcb ctx
-                 $forall lf <- lfs
-                   ^{lf}
-                 <hr>
-               $nothing
-                 <p><a href="@{cr}?setcb=#{show eid}">copy</a> #{_ecname e} to clipboard
                  <hr>
 
-             $with ename <- caseJust mentity "deleted" _ecname
+                 $maybe e <- mentity
+                   $maybe cb <- cmcb ctx
+                     $forall lf <- lfs
+                       ^{lf}
+                     <hr>
+                   $nothing
+                     <p><a href="@{cr}?setcb=#{show eid}">copy</a> #{_ecname e} to clipboard
+                     <hr>
+
+                 $with ename <- caseJust mentity "deleted" _ecname
            
-               $maybe u <- (cmuser ctx)
-                 ^{renderTags gs u eid}
-                 <br>
-                 ^{tagw}
-                 <hr>
-               ^{renderVotes gs (cmuser ctx) (E eid) cr}
-               <hr>
-
-               $if not $ null srcLinks
-                 <h2>#{ename}'s links
-                 <ul>
-                 $forall lw <- srcLinks
-                   <li> ^{fst lw}
-
-               $if not $ null dstLinks
-                 <h2>#{ename}'s backlinks
-                 <ul>
-                 $forall lw <- dstLinks
-                   <li> ^{fst lw}
-
-               $if not $ null srcLinks
-                 <hr>
-               $else
-                 $if not $ null dstLinks
+                   $maybe u <- (cmuser ctx)
+                     ^{renderTags gs u eid}
+                     <br>
+                     ^{tagw}
+                     <hr>
+                   ^{renderVotes gs (cmuser ctx) (E eid) cr}
                    <hr>
-               comments:
-               ^{cw}
-           |])
-       (case mentity of
-          Just ent -> (cgs ctx, ent)
-          Nothing -> error "not found")         
+
+                   $if not $ null srcLinks
+                     <h2>#{ename}'s links
+                     <ul>
+                     $forall lw <- srcLinks
+                       <li> ^{fst lw}
+
+                   $if not $ null dstLinks
+                     <h2>#{ename}'s backlinks
+                     <ul>
+                     $forall lw <- dstLinks
+                       <li> ^{fst lw}
+
+                   $if not $ null srcLinks
+                     <hr>
+                   $else
+                     $if not $ null dstLinks
+                       <hr>
+                   comments:
+                   ^{cw}
+               |])
+       provideRep $
+         (case mentity of
+            Just ent -> return $ toJSON (cgs ctx, ent)
+            Nothing -> error "not found")         
 
 -- Clean up text so it looks good in a URL
 urlifier :: T.Text -> T.Text
@@ -1565,7 +1580,7 @@ urlifier s =
 -- so we do an automatic redirect if we use the simplified url that doesn't
 -- have the name.  (The name passed to the final handler gets ignored -- it's
 -- just there for looks.)
-getEntityR :: Eid -> Handler RepHtmlJson
+getEntityR :: Eid -> Handler TypedContent
 getEntityR eid = 
   do ig <- getYesod
      gs' <- liftIO $ query (acid ig) GetStateQ
@@ -1576,10 +1591,10 @@ getEntityR eid =
 
 -- If you supply a name, we ignore it and go straight to the regulary entity
 -- handler.
-getEntityCanonR :: Eid -> T.Text -> Handler RepHtmlJson
+getEntityCanonR :: Eid -> T.Text -> Handler TypedContent
 getEntityCanonR eid name = getEntityR' eid
 
-deleteEntityCanonR :: Eid -> T.Text -> Handler RepHtml
+deleteEntityCanonR :: Eid -> T.Text -> Handler Html
 deleteEntityCanonR eid name = deleteEntityR eid
 
 -- Helper function for writing delete handlers.
@@ -1600,7 +1615,7 @@ deleteThing auth string action redir =
      layout [whamlet|^{w}|]
 
 
-deleteEntityR :: Eid -> Handler RepHtml
+deleteEntityR :: Eid -> Handler Html
 deleteEntityR eid =
   deleteThing DelEntity "delete entity" (\user -> DelEntityU (user ^. uid) eid) (EntityR eid)
 
@@ -1645,7 +1660,7 @@ newOrganizationForm ment =
       <*> aopt bTextField "website/blog"                  (fmap (fmap unUrl . _ehp) ment)
       <*> aopt bTextField "twitter"                       (fmap (fmap unUrl . _etwt) ment)
 
-getNewPersonR' :: Maybe Eid -> Handler RepHtml
+getNewPersonR' :: Maybe Eid -> Handler Html
 getNewPersonR' meid = 
   do ctx <- getContext Nothing
      let mentity = mConcat $ fmap (\eid -> (cgs ctx) ^. entities . at eid) meid
@@ -1668,7 +1683,7 @@ getNewPersonR' meid =
            <p>You must be logged in to add or modify a person.
        |]
 
-getNewOrgR' :: Maybe Eid -> Handler RepHtml
+getNewOrgR' :: Maybe Eid -> Handler Html
 getNewOrgR' meid =
   do ctx <- getContext Nothing
      let mentity = mConcat $ fmap (\eid -> (cgs ctx) ^. entities . at eid) meid
@@ -1697,7 +1712,7 @@ getEditPersonR eid = getNewPersonR' (Just eid)
 getEditOrgR eid = getNewOrgR' (Just eid)
 
 
-postNewPersonR' :: Maybe Eid -> Handler RepHtml
+postNewPersonR' :: Maybe Eid -> Handler Html
 postNewPersonR' meid =
   do w <- 
        reqAuth
@@ -1727,7 +1742,7 @@ postNewPersonR' meid =
             |]
 
 
-postNewOrgR' :: Maybe Eid -> Handler RepHtml
+postNewOrgR' :: Maybe Eid -> Handler Html
 postNewOrgR' meid =
   do w <- 
        reqAuth
@@ -1799,7 +1814,8 @@ flattenMaybe (x:xs) =
     Nothing -> flattenMaybe xs
     Just a -> a : flattenMaybe xs
 
-newLinkFormPart1 :: Entity -> Entity -> [(T.Text, LinkType)] -> Html -> MForm InfluenceGraph InfluenceGraph (FormResult LinkType, Widget)
+-- newLinkFormPart1 :: Entity -> Entity -> [(T.Text, LinkType)] -> Html -> MForm InfluenceGraph InfluenceGraph (FormResult LinkType, Widget)
+newLinkFormPart1 :: Entity -> Entity -> [(T.Text, LinkType)] -> Html -> MForm Handler (FormResult LinkType, Widget)
 newLinkFormPart1 e1 e2 sfl extra =
   do (ltRes, ltView) <- mreq (selectFieldList sfl) "link type" Nothing
      let formRes = id <$> ltRes
@@ -1876,7 +1892,7 @@ getsfl gs eid1 eid2 =
             e2)
 
 
-getNewLinkR' :: Eid -> Eid -> Maybe LinkType -> Handler RepHtml
+getNewLinkR' :: Eid -> Eid -> Maybe LinkType -> Handler Html
 getNewLinkR' eid1 eid2 mlt =
   do w <-
        reqAuth
@@ -1913,7 +1929,7 @@ getNewLinkR' eid1 eid2 mlt =
 
 getNewLinkR eid1 eid2 = getNewLinkR' eid1 eid2 Nothing
 
-
+postNewLink2R :: Eid -> Eid -> Handler Html
 postNewLink2R eid1 eid2 =
   do ctx <- getContext $ Nothing
      case getsfl (cgs ctx) eid1 eid2 of
@@ -1925,7 +1941,7 @@ postNewLink2R eid1 eid2 =
               _ -> layout $ errW "invalid input"
      
 
-postNewLinkR :: Eid -> Eid -> Handler RepHtml
+postNewLinkR :: Eid -> Eid -> Handler Html
 postNewLinkR eid1 eid2 =
   do w <- 
        reqAuth
@@ -1949,7 +1965,7 @@ postNewLinkR eid1 eid2 =
 
      layout [whamlet|^{w}|]
 
-getLinkR :: Lid -> Handler RepHtml
+getLinkR :: Lid -> Handler Html
 getLinkR lid =
   do ctx <- getContext $ Just $ L lid
      let gs = cgs ctx
@@ -1979,7 +1995,7 @@ getLinkR lid =
          ^{comments}
        |]
 
-getEditLinkR :: Lid -> Handler RepHtml
+getEditLinkR :: Lid -> Handler Html
 getEditLinkR lid =
   do ctx <- getContext $ Just $ L lid
      case (cgs ctx) ^. links . at lid of
@@ -2000,7 +2016,7 @@ getEditLinkR lid =
                           <input type=submit value="update link">
                      |]
 
-postEditLinkR :: Lid -> Handler RepHtml
+postEditLinkR :: Lid -> Handler Html
 postEditLinkR lid =
   do w <- 
        reqAuth
@@ -2030,13 +2046,13 @@ postEditLinkR lid =
 
 
 
-deleteLinkR :: Lid -> Handler RepHtml
+deleteLinkR :: Lid -> Handler Html
 deleteLinkR lid =
   deleteThing DelLink "delete link" (\user -> DelLinkU (user ^. uid) lid) (LinkR lid)
 
 postDelLinkR = deleteLinkR
 
-getLinksBetweenR :: Eid -> Eid -> Handler RepHtml
+getLinksBetweenR :: Eid -> Eid -> Handler Html
 getLinksBetweenR = undefined
 
 
@@ -2061,7 +2077,7 @@ renderTags gs u eid =
                 <a href="@{OTagR tid}">#{otToText tag}</a>
           |]
 
-getPTagR :: PTid -> Handler RepHtml
+getPTagR :: PTid -> Handler Html
 getPTagR ptid =
   do ctx <- getContext $ Just $ PT ptid
      cr <- curRoute
@@ -2088,13 +2104,13 @@ getPTagR ptid =
                     ^{comments}
                   |]
 
-deletePTagR :: PTid -> Handler RepHtml
+deletePTagR :: PTid -> Handler Html
 deletePTagR ptid =
   deleteThing DelTag "delete tag" (\user -> DelPTagU (user ^. uid) ptid) (PTagR ptid)
 
 postDelPTagR = deletePTagR
 
-getOTagR :: OTid -> Handler RepHtml
+getOTagR :: OTid -> Handler Html
 getOTagR otid = 
   do ctx <- getContext $ Just $ OT otid
      cr <- curRoute
@@ -2121,13 +2137,13 @@ getOTagR otid =
                     ^{comments}
                   |]
 
-deleteOTagR :: OTid -> Handler RepHtml
+deleteOTagR :: OTid -> Handler Html
 deleteOTagR otid =
   deleteThing DelTag "delete tag" (\user -> DelOTagU (user ^. uid) otid) (OTagR otid)
 
 postDelOTagR = deleteOTagR
 
-getUTagR :: UTid -> Handler RepHtml
+getUTagR :: UTid -> Handler Html
 getUTagR utid = err "user tags not implemented"
 
 ptToText :: PTag -> T.Text
@@ -2232,7 +2248,7 @@ tagForm (Just u) (Just entity) =
              Organization _ -> newOrgTagForm
     
 
-postNewTagR :: Eid -> Handler RepHtml
+postNewTagR :: Eid -> Handler Html
 postNewTagR eid =
   do w <- 
        reqAuth
@@ -2350,7 +2366,7 @@ renderComments gs muser parent =
                            ^{gchildren}
                  |]
 
-getCommentR :: Cid -> Handler RepHtml
+getCommentR :: Cid -> Handler Html
 getCommentR cid =
   do ctx <- getContext $ Just $ C cid
      cr <- curRoute
@@ -2379,7 +2395,7 @@ getCommentR cid =
                 ^{children}
               |]
 
-deleteCommentR :: Cid -> Handler RepHtml
+deleteCommentR :: Cid -> Handler Html
 deleteCommentR cid =
   deleteThing DelComment "delete comment" (\user -> DelCommentU (user ^. uid) cid) (CommentR cid)
 
@@ -2388,7 +2404,7 @@ postDelCommentR = deleteCommentR
 postRemCommentR cid =
   deleteThing DelComment "remove comment" (\user -> RemoveCommentU (user ^. uid) cid) (CommentR cid)
 
-getCommentCtxR :: Cid -> Handler RepHtml
+getCommentCtxR :: Cid -> Handler Html
 getCommentCtxR cid =
   do ctx <- getContext $ Just $ C cid
      let gs = cgs ctx
@@ -2412,7 +2428,7 @@ validateId gs id =
     OT otid -> isJust $ gs ^. otags     . at otid
     
 
-postNewCommentR :: Handler RepHtml
+postNewCommentR :: Handler Html
 postNewCommentR =
   do w <- 
        reqAuth
@@ -2436,7 +2452,7 @@ postNewCommentR =
 
 -- ISSUE MANAGEMENT
 
-getIssuesR :: Handler RepHtml
+getIssuesR :: Handler Html
 getIssuesR =
   do ctx <- getContext Nothing
      (pw, is) <- paginateL (M.keys $ (cgs ctx) ^. issues)
@@ -2460,8 +2476,8 @@ getIssuesR =
        |]
 
 
-getIssueR :: Iid -> Handler RepHtml
-getIssueR iid =
+getIssueCanonR :: Iid -> T.Text -> Handler Html
+getIssueCanonR iid _ =
   do ctx <- getContext (Just $ I iid)
      let gs = cgs ctx
      case gs ^. issues ^. at iid of
@@ -2480,9 +2496,14 @@ getIssueR iid =
                        $maybe wp <- _iwp issue
                          <a href="http://en.wikipedia.org/wiki/#{wp}">wikipedia</a>
 
+                   $if (hasPerm ctx EditIssue)
+                     <form method="get" action="@{EditIssueR iid}">
+                       <input type="submit" value="edit" />
+
                    <hr>
                      <center>
                        <object data=@{IssueSvgR iid} class="issuegraph" type="image/svg+xml"></object>
+
                    <hr>
                    <ul>
                      ^{pw}
@@ -2497,6 +2518,19 @@ getIssueR iid =
                      ^{pw}
                  |]
 
+-- We like to have the entity name appear in the url rather than just a number,
+-- so we do an automatic redirect if we use the simplified url that doesn't
+-- have the name.  (The name passed to the final handler gets ignored -- it's
+-- just there for looks.)
+getIssueR :: Iid -> Handler Html
+getIssueR iid = 
+  do ig <- getYesod
+     gs' <- liftIO $ query (acid ig) GetStateQ
+     let gs = fromEither gs'
+     case gs ^. issues . at iid of
+       Nothing -> err "no such issue"
+       Just i -> redirect (IssueCanonR iid (urlifier $ i ^. iname))
+
 newIssueForm missue =
   renderDivs $
     (,,)
@@ -2504,7 +2538,7 @@ newIssueForm missue =
       <*> aopt bTextField "issue description"             (fmap _idesc missue)
       <*> aopt bTextField "http://en.wikipedia.org/wiki/" (fmap (fmap unUrl . _iwp) missue)
 
-getNewIssueR :: Handler RepHtml
+getNewIssueR :: Handler Html
 getNewIssueR =
   do w <-
        reqAuth
@@ -2521,7 +2555,7 @@ getNewIssueR =
                 |])
      layout [whamlet|^{w}|]
 
-postNewIssueR :: Handler RepHtml
+postNewIssueR :: Handler Html
 postNewIssueR =
   do w <- 
        reqAuth
@@ -2542,6 +2576,46 @@ postNewIssueR =
 
      layout [whamlet|^{w}|]
 
+getEditIssueR :: Iid -> Handler Html
+getEditIssueR iid =
+  do w <-
+       reqAuth
+         "edit an issue"
+         EditIssue
+         (\ctx user ->
+           case (cgs ctx) ^. issues ^. at iid of
+             Nothing -> return $ errW "issue not found"
+             Just i ->
+               do (widget, enctype) <- generateFormPost (newIssueForm $ Just i)
+                  return
+                    [whamlet|
+                       <h1>Edit issue:
+                       <form method=post action=@{EditIssueR iid} enctype=#{enctype}>
+                         ^{widget}
+                         <input type=submit value="update issue">
+                    |])
+     layout [whamlet|^{w}|]
+
+postEditIssueR :: Iid -> Handler Html
+postEditIssueR iid =
+  do w <- 
+       reqAuth
+         "edit issue"
+         EditIssue
+         (\ctx user ->
+             do let gs = cgs ctx 
+                ((result, widget), enctype) <- runFormPost $ newIssueForm Nothing
+                case result of
+                  FormSuccess (name, desc, wp) ->
+                    do ig <- getYesod
+                       miid <- liftIO $ update (acid ig) (EditIssueU (user ^. uid) (Issue iid name desc (fmap Url wp) S.empty))
+                       case miid of
+                         Left err -> return $ errW (T.pack err)
+                         Right iid ->
+                           redirect (IssueR iid) 
+                  _ -> return $ errW "invalid input")
+
+     layout [whamlet|^{w}|]
 
 
 
@@ -2570,7 +2644,7 @@ renderIssueTagForm gs lid =
            <input type=submit value="tag issue">
        |]
 
-postNewIssueTagR :: Lid -> Handler RepHtml
+postNewIssueTagR :: Lid -> Handler Html
 postNewIssueTagR lid =
   do w <- 
        reqAuth
@@ -2593,18 +2667,18 @@ postNewIssueTagR lid =
 
 
 
-postDelIssueR :: Iid -> Handler RepHtml
+postDelIssueR :: Iid -> Handler Html
 postDelIssueR iid =
   deleteThing DelIssue "delete issue" (\user -> DelIssueU (user ^. uid) iid) (IssuesR)
 
-postDelIssueTagR :: Lid -> Iid -> Handler RepHtml
+postDelIssueTagR :: Lid -> Iid -> Handler Html
 postDelIssueTagR lid iid =
   deleteThing DelIssueTag "delete issue tag" (\user -> DelIssueTagU (user ^. uid) (L lid) iid) (IssueR iid)
 
 
 -- MISC HANDLERS
 
-getWikiR :: Txt -> Handler RepHtml
+getWikiR :: Txt -> Handler Html
 getWikiR wiki =
   do ctx <- getContext Nothing
      let gs = cgs ctx
@@ -2631,7 +2705,7 @@ getWikiR wiki =
               1 -> redirect (EntityR (S.findMin es))
               _ -> layout (multi es)
 
-getRandomR' :: Int -> Handler RepHtml
+getRandomR' :: Int -> Handler Html
 getRandomR' 0 = error "couldn't find a suitable entitiy"
 getRandomR' n =
   do ctx <- getContext Nothing
@@ -2702,7 +2776,7 @@ getIssueSvgR iid@(Iid id) =
      renderSvg (cfslock ctx) ("./nginx/static/issues/" ++ (show id)) dot
 
 -- Get svg rendering of an organization's org chart.
-getOrgChartSvgR :: Eid -> Handler RepHtml
+getOrgChartSvgR :: Eid -> Handler Html
 getOrgChartSvgR eid@(Eid id) =
   do ctx <- getContext (Just $ E eid)
      utc <- liftIO $ getCurrentTime
@@ -2711,13 +2785,13 @@ getOrgChartSvgR eid@(Eid id) =
      renderSvg (cfslock ctx) ("./nginx/static/orgcharts/org-" ++ (show id)) dot
 
 -- Same as above, but specific to a date.
-getOrgChartSvgDateR :: Eid -> Int -> Handler RepHtml
+getOrgChartSvgDateR :: Eid -> Int -> Handler Html
 getOrgChartSvgDateR eid@(Eid id) date =
   do ctx <- getContext (Just $ E eid)
      let dot = orgchartgv (cgs ctx) eid (dayrange $ intToDay date)
      renderSvg (cfslock ctx) ("./nginx/static/orgcharts/org-" ++ (show id)) dot
 
-getOrgChartR :: Eid -> Handler RepHtml
+getOrgChartR :: Eid -> Handler Html
 getOrgChartR eid =
   do ctx <- getContext $ Just $ E eid
      layout $
@@ -2727,7 +2801,7 @@ getOrgChartR eid =
            <object data=@{OrgChartSvgR eid} class="orgchart" type="image/svg+xml"></object>
        |]
 
-getOrgChartDateR :: Eid -> Int -> Handler RepHtml
+getOrgChartDateR :: Eid -> Int -> Handler Html
 getOrgChartDateR eid date =
   do ctx <- getContext $ Just $ E eid
      layout $
@@ -2738,10 +2812,10 @@ getOrgChartDateR eid date =
        |] 
 
 -- Dump the entire graph of links in a simplified format understood by Pariah.
-getRSStateR :: Handler RepJson
+-- getRSStateR :: Handler TypedContent
 getRSStateR =
   do ctx <- getContext Nothing
-     jsonToRepJson (cgs ctx)
+     return $ toJSON (cgs ctx)
 
 -- MAIN
 
@@ -2753,4 +2827,4 @@ main =
     (\acid ->
        do mgr <- newManager def
           lock <- newMVar ()
-          warpDebug 3001 $ InfluenceGraph mgr acid lock)
+          warp 3001 $ InfluenceGraph mgr acid lock)
