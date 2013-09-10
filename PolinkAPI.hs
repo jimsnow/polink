@@ -242,6 +242,10 @@ linkgv gs l =
         " URL=\"" ++ (linkurl (l ^. lid)) ++
         "\" target=\"_top\"]\n"
 
+-- Produce graphviz source for an orgchart rooted at a particular eid.
+-- Note: originally, I set "aspect=1.5", but that causes all kinds of
+--       corruption inside graphviz.
+--       See http://www.graphviz.org/mantisbt/view.php?id=2364
 
 orgchartgv :: GraphState -> Eid -> Maybe (Day, Day) -> String
 orgchartgv gs eid mrange =
@@ -260,7 +264,7 @@ orgchartgv gs eid mrange =
           allTrunc = concatMap
                        (\(parent, _, members, _) -> mapLeft (\count -> [(parent,count)]) members []) oc
       in
-        "digraph {\n graph [bgcolor=\"transparent\" aspect=1.5]\n" ++
+        "digraph {\n graph [bgcolor=\"transparent\"]\n" ++
           (entitygv root) ++
           (concatMap entitygv allOrgs) ++
           (concatMap entitygv (allOffs ++ allPeople)) ++
@@ -303,7 +307,7 @@ unique xs = S.toList (S.fromList xs)
 
 issuegv :: GraphState -> Iid -> String
 issuegv gs iid =
-  "digraph {\n graph [bgcolor=\"transparent\" aspect=1.5]\n" ++
+  "digraph {\n graph [bgcolor=\"transparent\"]\n" ++
   (concatMap entitygv ents) ++
   (concatMap (linkgv gs) links) ++
   "}\n"

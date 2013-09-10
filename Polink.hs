@@ -194,8 +194,9 @@ instance Yesod InfluenceGraph
 --         return $ Just $ clientSessionBackend key (60 * 24 * 14) -- 2 week session timeout.
 
 -- More recent versions of Yesod do this differently...
---      do backend <- defaultClientSessionBackend (24*60*7) "mykey.aes"
---         return $ Just backend
+    makeSessionBackend _ =      
+      do backend <- defaultClientSessionBackend (24*60*7) "mykey.aes"
+         return $ Just backend
 
 --      let setTimeout cookie = cookie { setCookieMaxAge = Just week }
 --      in fmap (customizeSessionCookies setTimeout)
@@ -920,7 +921,7 @@ getNewUserR =
            <p>Please enter a username.  This is the name that other users will see.
            <form method=post action=@{NewUserR} enctype=#{enctype}>
              ^{widget}
-             <input type=submit><p>
+             <input type=submit value="create user"><p>
 
            <p><a href=@{AuthR LogoutR}>cancel</a>
 
