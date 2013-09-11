@@ -490,7 +490,6 @@ hasPerm ctx p =
 layout :: GW -> Handler Html
 layout w =
   do newAccountRedirect
-     addHeader "Access-Control-Allow-Origin" "*"
      content <- widgetToPageContent
                   (do w
                       toWidget [lucius| |]
@@ -530,6 +529,11 @@ function hideid(id) {
              <script src="http://polink.org/static/jquery.cookie.js"></script>
              <script src="http://polink.org/static/polink.js"></script>
        |]
+
+-- Wrapper function for json generation, so we set the header appropriately.
+jsonify j =
+  do addHeader "Access-Control-Allow-Origin" "*"
+     return $ toJSON j
 
 -- Bail out with a given text string.
 err :: T.Text -> Handler Html
@@ -1566,7 +1570,7 @@ getEntityR' eid =
                |])
        provideRep $
          (case mentity of
-            Just ent -> return $ toJSON (cgs ctx, ent)
+            Just ent -> jsonify $ toJSON (cgs ctx, ent)
             Nothing -> error "not found")         
 
 -- Clean up text so it looks good in a URL
@@ -2816,7 +2820,7 @@ getOrgChartDateR eid date =
 -- getRSStateR :: Handler TypedContent
 getRSStateR =
   do ctx <- getContext Nothing
-     return $ toJSON (cgs ctx)
+     jsonify $ toJSON (cgs ctx)
 
 -- MAIN
 
