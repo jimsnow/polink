@@ -1460,16 +1460,10 @@ renderEntity gs eid =
             <p>
               $maybe w <- wp
                 <a href="http://en.wikipedia.org/wiki/#{w}">wikipedia</a>
-              $nothing
-                _
               $maybe b <- blog
                 \ <a href="#{b}">website</a>
-              $nothing
-                \ _
               $maybe t <- twt
                 \ <a href="#{showTwt t}">twitter</a>
-              $nothing
-                \ _
 
         |], Just e)
 
@@ -1643,6 +1637,11 @@ mConcat Nothing = Nothing
 
 bTextField = check (bracketLen "text field must be between 3 and 256 characters" 3 256) textField
 
+formHelp =
+  [whamlet| 
+    <p>Note: for browsers that don't support html5 date attribute, the date format is mm/dd/yyyy.
+  |]
+
 newPersonForm ment =
   renderDivs $
     eToPerson
@@ -1681,9 +1680,17 @@ getNewPersonR' meid =
                <input type=submit value="submit changes">
            $nothing
              <h1>Add a person.
+             <p>You must provide at least the name in popular usage, legal name,
+                and birthday. (Make an educated guess if you're not sure, but if
+                so, leave a comment.)
+             <p>The person's webpage may be given as a plain url (including the http://
+                or https://), the wiki link takes the final part of the wikipedia address,
+                and a twitter handle can either be the full url
+                (https://twitter.com/username) or @username.
              <form method=post action=@{NewPersonR} enctype=#{enctype}>
                ^{widget}
                <input type=submit value="add person">
+           ^{formHelp}
          $nothing
            <p>You must be logged in to add or modify a person.
        |]
@@ -1703,9 +1710,18 @@ getNewOrgR' meid =
                <input type=submit value="submit changes">
            $nothing
              <h1>Add an organization.
+             <p>You must provide at least the name by which the organization is
+                best known, its legal name, and date it was first formed.
+                (Make an educated guess if you're not sure, but if
+                so, leave a comment.)
+             <p>The organizations's webpage may be given as a plain url (including the http://
+                or https://), the wiki link takes the final part of the wikipedia address,
+                and a twitter handle can either be the full url
+                (https://twitter.com/username) or @username.
              <form method=post action=@{NewOrgR} enctype=#{enctype}>
                ^{widget}
                <input type=submit value="add organization">
+           ^{formHelp}
          $nothing
            <p>You must be logged in to add or modify a person.
        |]
@@ -1912,9 +1928,16 @@ getNewLinkR' eid1 eid2 mlt =
                      return
                        [whamlet|
                          <h1>Add a link: #{_ecname e1} &rarr; #{_ecname e2}
+                         <p>
+                           You must enter a link type, a start date,
+                           and provide at least one citation.  Try to use the
+                           most reputable, authoritative source you can find.
+                           Wikipedia is acceptable for things that can be reasonably
+                           regarded as non-controversial facts or common knowledge.
                          <form method=post action=@{NewLinkR eid1 eid2} enctype=#{enctype}>
                            ^{widget}
                            <input type=submit value="add link">
+                         ^{formHelp}
                        |])
      layout [whamlet|^{w}|]
   where
@@ -2473,6 +2496,9 @@ getIssuesR =
              $forall i <- is
                <li>
                  ^{renderId (cgs ctx) (I i)}
+                 $if (hasPerm ctx EditIssue)
+                   <form method="post" action="@{EditIssueR i}">
+                     <input type="submit" value="edit issue" />
                  $if (hasPerm ctx DelIssue)
                    <form method="post" action="@{DelIssueR i}">
                      <input type="submit" value="delete issue" />
@@ -2513,12 +2539,13 @@ getIssueCanonR iid _ =
                    <ul>
                      ^{pw}
                      $forall id <- ids
-                       <li>^{renderId gs id}
-                       $if (hasPerm ctx DelIssueTag)
-                         $case id
-                           $of L lid
-                             <form method="post" action="@{DelIssueTagR lid iid}">
-                               <input type="submit" value="remove from issue" />
+                       <li>
+                         ^{renderId gs id}
+                         $if (hasPerm ctx DelIssueTag)
+                           $case id
+                             $of L lid
+                               <form method="post" action="@{DelIssueTagR lid iid}">
+                                 <input type="submit" value="remove from issue" />
 
                      ^{pw}
                  |]
