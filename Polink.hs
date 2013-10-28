@@ -28,6 +28,7 @@ import Control.Exception (bracket)
 import Control.Lens -- hiding (left, right)
 import qualified Data.Map as M
 import qualified Data.Set as S
+import qualified Data.List as L
 import qualified Data.Sequence as SEQ
 import Data.List (sortBy)
 import Data.Function (on)
@@ -38,7 +39,7 @@ import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy.Char8 as LB8
 import Text.Julius
 import Text.Markdown (markdown, def)
-import Data.Time.Calendar (Day, toGregorian, addDays, Day(..))
+import Data.Time.Calendar (Day, toGregorian, fromGregorian, addDays, Day(..))
 import qualified Data.Char as C (toLower)
 import System.Random (getStdRandom, randomR)
 import System.Process (runCommand, system)
@@ -117,6 +118,38 @@ instance PathPiece (Maybe Int) where
   toPathPiece Nothing = "nothing"
   toPathPiece (Just i) = T.pack $ show i
 
+-- We want our own type here, because the default Day instance
+-- isn't user friendly and has a limited range.
+newtype PathDay = PathDay {unPathDay :: Day}
+  deriving (Eq, Ord, Show, Read)
+ 
+mread s =
+  case reads s of
+    [(a, "")] -> Just a
+    _ -> Nothing
+
+split :: Eq a => a -> [a] -> [[a]]
+split sep xs =
+  go xs [] []
+  where
+    --go :: [a] -> [a] -> [[a]] -> [[a]]
+    go [] cur prev = reverse ((reverse cur):prev)
+    go (x:xs) cur prev
+      | x == sep = go xs [] ((reverse cur):prev)
+      | otherwise = go xs (x:cur) prev
+
+instance PathPiece PathDay where
+  fromPathPiece daystring =
+    case split '-' (T.unpack daystring) of
+      (m:d:y:[]) -> do month <- mread m
+                       day <- mread d
+                       year <- mread y
+                       return $ PathDay $ fromGregorian year month day
+      _ -> Nothing
+
+  toPathPiece day =
+    let (y,m,d) = toGregorian (unPathDay day)
+    in T.pack $ (show d) ++ "-" ++ (show m) ++ "-" ++ (show y) 
 
 instance ToMarkup Url where
   toMarkup (Url t) = toMarkup t
@@ -148,12 +181,12 @@ mkYesod "InfluenceGraph" [parseRoutes|
   /ename/#Txt                    EntityByNameR    GET
   /e/#Eid                        EntityR          GET DELETE
   /e/#Eid/n/#Txt                 EntityCanonR     GET DELETE
-  /e/#Eid/orgchart-dot           OrgChartDotR     GET
-  /e/#Eid/orgchart-svg           OrgChartSvgR     GET
+  /e/#Eid/orgchart/dot           OrgChartDotR     GET
+  /e/#Eid/orgchart/svg           OrgChartSvgR     GET
   /e/#Eid/orgchart               OrgChartR        GET
-  /e/#Eid/orgchart-dot/date/#Int OrgChartDotDateR GET
-  /e/#Eid/orgchart-svg/date/#Int OrgChartSvgDateR GET
-  /e/#Eid/orgchart/date/#Int     OrgChartDateR    GET
+--  /e/#Eid/orgchart/dot/#PathDay OrgChartDotDateR GET
+--  /e/#Eid/orgchart/svg/#PathDay OrgChartSvgDateR GET
+--  /e/#Eid/orgchart/date/#PathDay     OrgChartDateR    GET
   /random                        RandomR          GET
   /dele/#Eid                     DelEntityR       POST
   /l/#Lid                        LinkR            GET DELETE
@@ -169,9 +202,12 @@ mkYesod "InfluenceGraph" [parseRoutes|
   /ut/#UTid                      UTagR            GET
   /el/#Eid/#Eid                  LinksBetweenR    GET
   /i/#Iid                        IssueR           GET
+--  /i/#Iid/date/#PathDay          IssueDateR       GET
   /i/#Iid/n/#Txt                 IssueCanonR      GET
   /i/#Iid/dot                    IssueDotR        GET
   /i/#Iid/svg                    IssueSvgR        GET
+--  /i/#Iid/dot/#PathDay           IssueDotDateR    GET
+--  /i/#Iid/svg/#PathDay           IssueSvgDateR    GET
   /i                             IssuesR          GET
   /newissue                      NewIssueR        GET POST
   /editissue/#Iid                EditIssueR       GET POST
@@ -1807,7 +1843,7 @@ ngeneric_lt = [Disagree, Criticize, Discredit, Distrust, Accuse, Condemn, Insult
 
 pp_lt = ([Marry, ParentOf, Nominate, Appoint, WorksFor, ContractsFor], [Divorce, Breakup, Fire, Assault, Kill])
 po_lt = ([Member, Invest, Retire, WorksFor, ContractsFor, HoldsOffice], [Resign, Divest])
-op_lt = ([Nominate, Appoint, Elect, BestowTitle, Award], [Recall])
+op_lt = ([Nominate, Appoint, Elect, BestowTitle, Award], [Recall, Fire])
 oo_lt = ([Invest, SubOrg, Member], [Divest, Split])
 
 mksfl :: ([PosLinkType],[NegLinkType]) -> [(T.Text, LinkType)]
@@ -2509,7 +2545,8 @@ getIssuesR =
 
 getIssueCanonR :: Iid -> T.Text -> Handler Html
 getIssueCanonR iid _ =
-  do ctx <- getContext (Just $ I iid)
+  do let mday = Nothing
+     ctx <- getContext (Just $ I iid)
      let gs = cgs ctx
      case gs ^. issues ^. at iid of
        Nothing -> err "deleted issue"
@@ -2533,7 +2570,11 @@ getIssueCanonR iid _ =
 
                    <hr>
                      <center>
-                       <object data=@{IssueSvgR iid} class="issuegraph" type="image/svg+xml"></object>
+                       $maybe day <- mday
+                         <p>#{showDate (unPathDay day)}
+                         <object data=@{IssueSvgR iid}?date=#{show day} class="issuegraph" type="image/svg+xml"></object>
+                       $nothing
+                         <object data=@{IssueSvgR iid} class="issuegraph" type="image/svg+xml"></object>
 
                    <hr>
                    <ul>
@@ -2550,6 +2591,7 @@ getIssueCanonR iid _ =
                      ^{pw}
                  |]
 
+
 -- We like to have the entity name appear in the url rather than just a number,
 -- so we do an automatic redirect if we use the simplified url that doesn't
 -- have the name.  (The name passed to the final handler gets ignored -- it's
@@ -2562,6 +2604,11 @@ getIssueR iid =
      case gs ^. issues . at iid of
        Nothing -> err "no such issue"
        Just i -> redirect (IssueCanonR iid (urlifier $ i ^. iname))
+
+{-
+getIssueDateR :: Iid -> PathDay -> Handler Html
+getIssueDateR iid date = getIssueCanonR' iid "" (Just date)
+-}
 
 newIssueForm missue =
   renderDivs $
@@ -2750,6 +2797,13 @@ getRandomR' n =
 
 getRandomR = getRandomR' 100
 
+getmdate :: Handler (Maybe Day)
+getmdate =
+  do mdatetext :: Maybe T.Text <- lookupGetParam "date"
+     case mdatetext of
+       Nothing -> return Nothing
+       Just t -> return $ fmap unPathDay $ fromPathPiece t
+
 -- We'll include anything that overlaps the current date by a couple of days.
 dayrange :: Day -> Maybe (Day, Day)
 dayrange day =
@@ -2769,17 +2823,23 @@ getOrgChartDotR eid =
      let now = utctDay utc
      return $ RepPlain $ toContent $ orgchartgv (cgs ctx) eid (dayrange now)
 
-getOrgChartDotDateR :: Eid -> Int -> Handler RepPlain
+getOrgChartDotDateR :: Eid -> PathDay -> Handler RepPlain
 getOrgChartDotDateR eid date =
   do ctx <- getContext (Just $ E eid)
-     return $ RepPlain $ toContent $ orgchartgv (cgs ctx) eid (dayrange $ intToDay date)
+     return $ RepPlain $ toContent $ orgchartgv (cgs ctx) eid (dayrange $ unPathDay date)
 
 
 getIssueDotR :: Iid -> Handler RepPlain
 getIssueDotR iid =
   do ctx <- getContext (Just $ I iid)
-     return $ RepPlain $ toContent $ issuegv (cgs ctx) iid
+     utc <- liftIO $ getCurrentTime
+     let now = utctDay utc
+     return $ RepPlain $ toContent $ issuegv (cgs ctx) iid (dayrange now)
 
+getIssueDotDateR :: Iid -> PathDay -> Handler RepPlain
+getIssueDotDateR iid date =
+  do ctx <- getContext (Just $ I iid)
+     return $ RepPlain $ toContent $ issuegv (cgs ctx) iid (dayrange (unPathDay date))
 
 -- Write dot output to a file, run graphviz on that file to generate svg,
 -- then send the result back to the client.  The lock keeps concurrent threads
@@ -2804,8 +2864,17 @@ renderSvg lock path dot =
 getIssueSvgR :: Iid -> Handler RepPlain
 getIssueSvgR iid@(Iid id) =
   do ctx <- getContext (Just $ I iid)
-     let dot = issuegv (cgs ctx) iid
+     utc <- liftIO $ getCurrentTime
+     let now = utctDay utc
+     let dot = issuegv (cgs ctx) iid (dayrange now)
      renderSvg (cfslock ctx) ("./nginx/static/issues/" ++ (show id)) dot
+
+getIssueSvgDateR :: Iid -> PathDay -> Handler RepPlain
+getIssueSvgDateR iid@(Iid id) date =
+  do ctx <- getContext (Just $ I iid)
+     let dot = issuegv (cgs ctx) iid (dayrange (unPathDay date))
+     renderSvg (cfslock ctx) ("./nginx/static/issues/" ++ (show id)) dot
+
 
 -- Get svg rendering of an organization's org chart.
 getOrgChartSvgR :: Eid -> Handler Html
@@ -2817,10 +2886,10 @@ getOrgChartSvgR eid@(Eid id) =
      renderSvg (cfslock ctx) ("./nginx/static/orgcharts/org-" ++ (show id)) dot
 
 -- Same as above, but specific to a date.
-getOrgChartSvgDateR :: Eid -> Int -> Handler Html
+getOrgChartSvgDateR :: Eid -> PathDay -> Handler Html
 getOrgChartSvgDateR eid@(Eid id) date =
   do ctx <- getContext (Just $ E eid)
-     let dot = orgchartgv (cgs ctx) eid (dayrange $ intToDay date)
+     let dot = orgchartgv (cgs ctx) eid (dayrange $ unPathDay date)
      renderSvg (cfslock ctx) ("./nginx/static/orgcharts/org-" ++ (show id)) dot
 
 getOrgChartR :: Eid -> Handler Html
@@ -2833,7 +2902,8 @@ getOrgChartR eid =
            <object data=@{OrgChartSvgR eid} class="orgchart" type="image/svg+xml"></object>
        |]
 
-getOrgChartDateR :: Eid -> Int -> Handler Html
+{-
+getOrgChartDateR :: Eid -> PathDay -> Handler Html
 getOrgChartDateR eid date =
   do ctx <- getContext $ Just $ E eid
      layout $
@@ -2842,6 +2912,7 @@ getOrgChartDateR eid date =
          <center>
            <object data=@{OrgChartSvgDateR eid date} type="image/svg+xml"></object>
        |] 
+-}
 
 -- Dump the entire graph of links in a simplified format understood by Pariah.
 -- getRSStateR :: Handler TypedContent

@@ -95,6 +95,27 @@ getLinks gs eid lt mrange rev =
                 then Just ((link ^. (if rev then ldst else lsrc)), link)
                 else Nothing
 
+-- Select just the Lids from a list of Ids.
+{-
+filterLids :: [Id] -> [Lid]
+filterLids [] = []
+filterLids ((L lid):xs) = lid : (filterLids xs)
+filterLids (_:xs) = filterLids xs
+-}
+
+-- Get all the direct links associated with an issue.
+getIssueLinks :: GraphState -> Iid -> Maybe (Day, Day) -> [Link]
+getIssueLinks gs iid mrange =
+  case gs ^. issues ^. at iid of
+    Nothing -> []
+    Just issue -> mapMaybe f $ S.toList $ issue ^. itagged
+  where
+    f (L lid) = do link <- gs ^. links . at lid
+                   if overlap mrange (Just $ link ^. ldate) (link ^. lend)
+                   then return link
+                   else Nothing
+    f _ = Nothing
+
 -- Find all directly reachable suborganizations of an organization.
 subOrgs :: GraphState -> Eid -> Maybe (Day, Day) -> [(Eid, Link)]
 subOrgs gs eid mrange = getLinks gs eid (PL $ PLType $ fromEnum SubOrg) mrange False
@@ -298,29 +319,19 @@ orgchartgv gs eid mrange =
 
 -- Generate a graph from all the links associated with a given issues.
 
-filterLids :: [Id] -> [Lid]
-filterLids [] = []
-filterLids ((L lid):xs) = lid : (filterLids xs)
-filterLids (_:xs) = filterLids xs
-
 unique xs = S.toList (S.fromList xs)
 
-issuegv :: GraphState -> Iid -> String
-issuegv gs iid =
+issuegv :: GraphState -> Iid -> Maybe (Day, Day) -> String
+issuegv gs iid mrange =
   "digraph {\n graph [bgcolor=\"transparent\"]\n" ++
   (concatMap entitygv ents) ++
   (concatMap (linkgv gs) links) ++
   "}\n"
-  where  
-    directlinks = case gs ^. issues ^. at iid of
-                   Nothing -> []
-                   Just issue -> resolveLids gs (filterLids $ S.toList $ issue ^. itagged)
+  where 
+    directlinks = getIssueLinks gs iid mrange
     directeids = concatMap (\l-> [l ^. lsrc, l ^. ldst]) directlinks
-
-    indirectlinks = allParentLinks gs directeids Nothing
+    indirectlinks = allParentLinks gs directeids mrange
     links = unique ((reverse indirectlinks) ++ directlinks)  
-
-    -- remove duplicates by converting to a set
     ents = resolveEids gs (unique $ concatMap (\l-> [l ^. lsrc, l ^. ldst]) links)
 
 allParentLinks :: GraphState -> [Eid] -> Maybe (Day, Day) -> [Link]
