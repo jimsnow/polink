@@ -802,6 +802,10 @@ renderVotes gs muser id cr  =
                 $if S.null set
                   \ no one
                 $else
+                  $if S.size set == 1
+                    \ user
+                  $else
+                    \ users
                   $forall u <- set
                     \ ^{renderId gs (U u)}
                 $maybe u <- muser
@@ -813,8 +817,8 @@ renderVotes gs muser id cr  =
             |]
       in
         [whamlet|
-          ^{w "verified by" agrees    "agree"    "verify"}
-          ^{w "disputed by" disagrees "disagree" "dispute"}
+          ^{w "this page verified by" agrees    "agree"    "verify"}
+          ^{w "this page disputed by" disagrees "disagree" "dispute"}
           $maybe u <- muser
             $if S.size agrees == 1
               $if S.member (_uid u) agrees
@@ -901,22 +905,30 @@ getHomeR =
             <h1><center>Welcome to polink.org, the social network anyone can edit!</center>
             <p><center><a href="@{AboutR}">What is this?</a></center>
             <p><center><a href="@{RSHelpR}">What are those funny colored rectangle things?</a></center>
-            <p><b>Points of interest:</b>
-            <ul>
-             <li><a href="@{EntityR (Eid 2)}">US Government</a> (<a href="@{OrgChartR (Eid 2)}">org chart</a>)
-             <li><a href="@{EntityR (Eid 11)}">US Presidents</a>
-             <li><a href="@{EntityR (Eid 48)}">US Supreme Court</a>
-             <li><a href="@{EntityR (Eid 21)}">US Senate</a>
-             <li><a href="@{EntityR (Eid 22)}">US House</a> (help us out by adding your representatives)
+            <p>
+             <b>Points of Interest:</b>
+            <p>
+             <center>
+              <a href="@{EntityR (Eid 2)}">US Government</a> (<a href="@{OrgChartR (Eid 2)}">org chart</a>) <br>
+              <a href="@{EntityR (Eid 11)}">US Presidents</a>
+              <a href="@{EntityR (Eid 48)}">US Supreme Court</a> <br>
+              <a href="@{EntityR (Eid 21)}">US Senate</a>
+              <a href="@{EntityR (Eid 22)}">US House</a> <br>
+              <a href="@{EntitiesR}">all entities</a> <a href="@{IssuesR}">all issues</a> <a href="@{UsersR}">all users</a>
 
-            <p><a href="@{EntitiesR}">all entities</a> <a href="@{IssuesR}">all issues</a> <a href="@{UsersR}">all users</a>
+            <br>
 
             $maybe u <- cmuser ctx
-              <p><b>Things to do:</b>
-              <p>If some important person is missing from our site, please <a href=@{NewPersonR}>add them</a>.  If you find inaccurate or duplicate information, please leave a comment and click the "dispute" button on that entry.  You can also help us out by visiting a <a href="@{RandomR}">random</a> entity and verifying that the data is correct.  (Use the "verify"/"dispute" buttons.)
+              <p><b>Get Involved:</b>
+              <p>If you're looking for someone or something that isn't here, please help us out by adding them.
+              <p>If you find inaccurate or duplicate information, please leave a comment and click the "dispute" button on that entry.  You can also help us out by visiting a <a href="@{RandomR}">random</a> entity and verifying that the data is correct.  (Use the "verify"/"dispute" buttons.)
               <p>You may also establish a link between two entities by using the clipboard.  For instance, to mark someone as a member of the House, click "copy to clipboard" on that person's page, then navigate to the <a href=@{EntityR (Eid 22)}>US House</a> and create the link with "member of" as the link type.
+            $nothing
+              <p>
+               <center>
+                <b>This site depends on volunteers to contribute data.  Create an account to get involved!
 
-            <p><b>Recent Changes</b>
+            <p><b>Recent Changes:</b>
             ^{changes}
           |]
 
@@ -1310,10 +1322,7 @@ getRSHelpR =
           <p>
             (If you aren't seeing them, it may mean your "point of view" is set
             to "none" or your browser does not render SVG, or
-            you have javascript disabled, or something has gone wrong on our end.  Sorry.
-            Also, if you see plain rectangles but no colored bars inside,
-            see the question below about point of view.)
-
+            you have javascript disabled, or something has gone wrong on our end.  Sorry.)
           <h3>So, what do they mean?
           <p>
             The colored bars represent the reputation of the person or organization
@@ -1329,7 +1338,7 @@ getRSHelpR =
             The yellow-orange, upper bar is a little more subtle.  It shows the degree
             to which that person associates with people who have a bad reputation.
 
-          <h3>How do you calculate reputation?
+          <h3>How is reputation determined?
           <p>
             Reputations are calculated based on the connections between entities.
             If person <b>A</b> disagrees with person <b>B</b>, <b>B</b>'s red bar will get
@@ -1481,6 +1490,7 @@ renderEntity gs eid =
           blog    = e ^. ehp
           twt     = e ^. etwt
           Eid id  = eid
+          exploreurl = "http://polink.org/static/Polink/polink_nav.html#e=" ++ (show id)
       in
         ([whamlet|
           <center>
@@ -1500,6 +1510,10 @@ renderEntity gs eid =
                 \ <a href="#{b}">website</a>
               $maybe t <- twt
                 \ <a href="#{showTwt t}">twitter</a>
+            <p>
+             <b>
+              <div class="explore">
+               <a href="#{exploreurl}">explore!</a>
 
         |], Just e)
 
@@ -2804,6 +2818,17 @@ getmdate =
        Nothing -> return Nothing
        Just t -> return $ fmap unPathDay $ fromPathPiece t
 
+-- Same as above, but if date isn't specified, we'll just go with current date.
+getdate :: Handler Day
+getdate =
+  do mdatetext :: Maybe T.Text <- lookupGetParam "date"
+     case mdatetext of
+       Nothing -> do utc <- liftIO $ getCurrentTime
+                     return (utctDay utc)
+       Just t -> case fmap unPathDay $ fromPathPiece t of
+                   Just day -> return day
+                   _ -> error "couldn't parse date"
+
 -- We'll include anything that overlaps the current date by a couple of days.
 dayrange :: Day -> Maybe (Day, Day)
 dayrange day =
@@ -2819,27 +2844,29 @@ intToDay i = ModifiedJulianDay $ fromIntegral i
 getOrgChartDotR :: Eid -> Handler RepPlain
 getOrgChartDotR eid =
   do ctx <- getContext (Just $ E eid)
-     utc <- liftIO $ getCurrentTime
-     let now = utctDay utc
-     return $ RepPlain $ toContent $ orgchartgv (cgs ctx) eid (dayrange now)
+     date <- getdate
+     return $ RepPlain $ toContent $ orgchartgv (cgs ctx) eid (dayrange date)
 
+{-
 getOrgChartDotDateR :: Eid -> PathDay -> Handler RepPlain
 getOrgChartDotDateR eid date =
   do ctx <- getContext (Just $ E eid)
      return $ RepPlain $ toContent $ orgchartgv (cgs ctx) eid (dayrange $ unPathDay date)
-
+-}
 
 getIssueDotR :: Iid -> Handler RepPlain
 getIssueDotR iid =
   do ctx <- getContext (Just $ I iid)
-     utc <- liftIO $ getCurrentTime
-     let now = utctDay utc
-     return $ RepPlain $ toContent $ issuegv (cgs ctx) iid (dayrange now)
+     date <- getdate
+     return $ RepPlain $ toContent $ issuegv (cgs ctx) iid (dayrange date)
 
+{-
 getIssueDotDateR :: Iid -> PathDay -> Handler RepPlain
 getIssueDotDateR iid date =
   do ctx <- getContext (Just $ I iid)
      return $ RepPlain $ toContent $ issuegv (cgs ctx) iid (dayrange (unPathDay date))
+-}
+
 
 -- Write dot output to a file, run graphviz on that file to generate svg,
 -- then send the result back to the client.  The lock keeps concurrent threads
