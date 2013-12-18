@@ -168,7 +168,7 @@ mkYesod "InfluenceGraph" [parseRoutes|
   /u                             UsersR           GET
   /u/#Txt                        UserR            GET
   /uid/#Uid                      UserIDR          GET POST
-  /e                             EntitiesR        GET
+  /e                             EntitiesR        GET POST
   /newperson                     NewPersonR       GET POST
   /neworg                        NewOrgR          GET POST
   /editperson/#Eid               EditPersonR      GET POST
@@ -1433,6 +1433,22 @@ getEntitiesR =
            <p>^{renderEid gs eid}
          ^{pw}
        |]
+
+-- Fetch a list of entities by posting the list of Eids.
+-- We expect the Eids as plain ints.  Results should come back in the same
+-- order, but there may be "gaps" if lookups fail.
+postEntitiesR :: Handler TypedContent
+postEntitiesR =
+  do ctx <- getContext Nothing
+     let gs = cgs ctx
+     let es = (gs ^. entities)
+     eids <- parseJsonBody_
+     selectRep $
+       provideRep $
+         jsonify $
+           map
+             (\e -> toJSON (gs, e))
+             (resolveEids gs (map Eid eids))
 
 getEntityByNameR :: Txt -> Handler Html
 getEntityByNameR = undefined
