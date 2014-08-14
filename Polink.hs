@@ -926,7 +926,7 @@ getHomeR =
             $nothing
               <p>
                <center>
-                <b>This site depends on volunteers to contribute data.  Create an account to get involved!
+                <b>This site depends on data contributed by volunteers.  Create an account to get involved!
 
             <p><b>Recent Changes:</b>
             ^{changes}
@@ -1510,10 +1510,11 @@ renderEntity gs eid =
                 \ <a href="#{b}">website</a>
               $maybe t <- twt
                 \ <a href="#{showTwt t}">twitter</a>
-            <p>
-             <b>
-              <div class="explore">
-               <a href="#{exploreurl}">explore!</a>
+            <div class="explore">
+              <p>
+               <b>
+                 <a href="#{exploreurl}">explore!</a>
+               (experimental)
 
         |], Just e)
 
