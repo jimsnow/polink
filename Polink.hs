@@ -160,6 +160,7 @@ instance ToMarkup Url where
 
 mkYesod "InfluenceGraph" [parseRoutes|
   /                              HomeR            GET
+  /explore                       ExploreR         GET
   /auth                          AuthR Auth getAuth
   /newu                          NewUserR         GET POST
   /about                         AboutR           GET
@@ -931,6 +932,24 @@ getHomeR =
             <p><b>Recent Changes:</b>
             ^{changes}
           |]
+
+getExploreR :: Handler Html
+getExploreR =
+  do ctx <- getContext Nothing
+     let gs = cgs ctx
+     req <- getRequest
+     layout
+       [whamlet|
+          ^{cgw ctx}
+          <h1><center>If you are reading this, the javascript UI (via explore.js) probably isn't working.  Sorry.</center>
+          <center>
+            $maybe rt <- reqToken req
+              <p>request token is #{rt}
+            $nothing
+              <p>request token unavailable
+
+          <script src="http://polink.org/static/explore.js"></script>
+       |]
 
 -- USER MANAGEMENT
 
